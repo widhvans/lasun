@@ -21,7 +21,7 @@ async def _upload_to_telegraph(session, image_url):
             if response.status == 200:
                 content = await response.read()
                 path = await aio_telegraph.upload_file(BytesIO(content))
-                # **THE FIX**: Check if the path is a list with a dictionary
+                # Correctly handle the response from the telegraph library
                 if isinstance(path, list) and path and isinstance(path[0], dict) and 'src' in path[0]:
                     return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
@@ -43,7 +43,7 @@ async def _generate_fallback_image(text):
     lines = []
     current_line = ""
     for word in words:
-        # **THE FIX**: Use textbbox for modern Pillow versions
+        # Use textbbox for modern Pillow versions to avoid the 'textsize' error
         bbox = draw.textbbox((0, 0), current_line + word, font=font)
         if bbox[2] < 550: # Check width from bbox
             current_line += word + " "
@@ -55,7 +55,7 @@ async def _generate_fallback_image(text):
     y_text = 300
     for line in lines:
         bbox = draw.textbbox((0,0), line, font=font)
-        width, height = bbox[2], bbox[3] # Get width and height from bbox
+        width, height = bbox[2], bbox[3]
         draw.text(((600 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
         y_text += height + 10
 
@@ -70,7 +70,7 @@ async def _generate_fallback_image(text):
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
     
-    # Ultimate fallback if Telegraph fails
+    # Ultimate fallback if Telegraph itself fails, guaranteeing a valid image URL
     return f"https://via.placeholder.com/600x800/0F0F0F/FFFFFF?text={quote_plus(text)}"
 
 async def get_poster(clean_title: str, year: str = None):
@@ -79,7 +79,6 @@ async def get_poster(clean_title: str, year: str = None):
     search_query = f"{clean_title} {year}" if year else clean_title
 
     try:
-        # **THE FIX**: Import asyncio where it is used
         loop = asyncio.get_event_loop()
         movies = await loop.run_in_executor(None, lambda: ia.search_movie(search_query))
         
