@@ -11,19 +11,17 @@ logger = logging.getLogger(__name__)
 
 def get_batch_key(filename: str):
     """
-    Creates a batching key based on the extracted title and year.
-    This groups all files of a movie/series together, including different seasons.
+    Creates a batching key based on the most aggressively cleaned title and year.
+    This ensures all files for a movie or a full series are grouped together.
     e.g., "Mirzapur (2018)" becomes the key for S01, S02, etc.
     """
     details = extract_file_details(filename)
-    title = details.get('clean_title', 'untitled')
+    # Using the 'clean_title' is key to accurate batching
+    title = details.get('clean_title', 'untitled').strip()
     year = details.get('year', '0000')
     
-    # For series, we group by title and year to batch all seasons together
-    if details.get('type') == 'series':
-        return f"{title}_{year}".lower()
-        
-    # For movies, we also group by title and year
+    # For series and movies, group by the cleaned title and year
+    # This is robust enough to handle both cases correctly
     return f"{title}_{year}".lower()
 
 @Client.on_message(filters.channel & (filters.document | filters.video | filters.audio), group=2)
@@ -37,7 +35,7 @@ async def new_file_handler(client, message):
         user_id = await find_owner_by_db_channel(message.chat.id)
         if not user_id: 
             # If not found, maybe it's the admin posting in their own channel
-            if message.chat.id == client.owner_db_channel_id and Config.ADMIN_ID:
+            if hasattr(client, 'owner_db_channel_id') and message.chat.id == client.owner_db_channel_id and Config.ADMIN_ID:
                  user_id = Config.ADMIN_ID
             else:
                 return # Not a channel we are tracking for any user
