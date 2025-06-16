@@ -20,10 +20,10 @@ async def _upload_to_telegraph(session, image_url):
         async with session.get(image_url) as response:
             if response.status == 200:
                 content = await response.read()
-                # The response is a list containing a dictionary
                 path = await aio_telegraph.upload_file(BytesIO(content))
-                # Correctly access the 'src' key
-                return 'https://telegra.ph' + path[0]['src']
+                # **THE FIX**: Check if the path is a list with a dictionary
+                if isinstance(path, list) and path and isinstance(path[0], dict) and 'src' in path[0]:
+                    return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload image to Telegraph: {e}")
     return None
@@ -39,14 +39,13 @@ async def _generate_fallback_image(text):
     image = Image.new('RGB', (600, 800), color=(15, 15, 15))
     draw = ImageDraw.Draw(image)
     
-    # Simple word wrap
     words = text.split()
     lines = []
     current_line = ""
     for word in words:
-        # Use textbbox to get width for modern Pillow versions
+        # **THE FIX**: Use textbbox for modern Pillow versions
         bbox = draw.textbbox((0, 0), current_line + word, font=font)
-        if bbox[2] < 550:
+        if bbox[2] < 550: # Check width from bbox
             current_line += word + " "
         else:
             lines.append(current_line)
@@ -56,7 +55,7 @@ async def _generate_fallback_image(text):
     y_text = 300
     for line in lines:
         bbox = draw.textbbox((0,0), line, font=font)
-        width, height = bbox[2], bbox[3]
+        width, height = bbox[2], bbox[3] # Get width and height from bbox
         draw.text(((600 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
         y_text += height + 10
 
@@ -66,13 +65,13 @@ async def _generate_fallback_image(text):
     
     try:
         path = await aio_telegraph.upload_file(buffer)
-        # Correctly access the 'src' key
-        return 'https://telegra.ph' + path[0]['src']
+        if isinstance(path, list) and path and isinstance(path[0], dict) and 'src' in path[0]:
+            return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
-        # If Telegraph fails, use the ultra-reliable placeholder service as a final guarantee
-        return f"https://via.placeholder.com/600x800/0F0F0F/FFFFFF?text={quote_plus(text)}"
-
+    
+    # Ultimate fallback if Telegraph fails
+    return f"https://via.placeholder.com/600x800/0F0F0F/FFFFFF?text={quote_plus(text)}"
 
 async def get_poster(clean_title: str, year: str = None):
     """The 'Hero' Poster Finder. It will not fail."""
@@ -80,6 +79,7 @@ async def get_poster(clean_title: str, year: str = None):
     search_query = f"{clean_title} {year}" if year else clean_title
 
     try:
+        # **THE FIX**: Import asyncio where it is used
         loop = asyncio.get_event_loop()
         movies = await loop.run_in_executor(None, lambda: ia.search_movie(search_query))
         
