@@ -2,10 +2,9 @@ import asyncio
 import re
 import logging
 from pyrogram import Client, filters
-from pyrogram.errors import FloodWait, ChatAdminRequired, UserNotParticipant
 from config import Config
-from database.db import get_user, find_owner_by_db_channel
-from utils.helpers import create_post, extract_file_details
+from database.db import find_owner_by_db_channel
+from utils.helpers import extract_file_details
 
 logger = logging.getLogger(__name__)
 
