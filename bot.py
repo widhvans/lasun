@@ -112,20 +112,17 @@ class Bot(Client):
                 poster, caption, footer_keyboard = await create_post(self, user_id, messages)
                 if not caption: return
                 
-                # Iterate over a copy of the list to allow safe removal within the loop
                 for channel_id in user.get('post_channels', []).copy():
                     try:
                         if poster:
                             await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
                         else:
                             await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
-                        await asyncio.sleep(3) # Delay between posts to avoid flood waits
+                        await asyncio.sleep(3)
 
                     except (ChannelPrivate, ChatAdminRequired, UserNotParticipant):
                         logger.error(f"PERMISSION ERROR in channel {channel_id} for user {user_id}. Removing channel from settings.")
-                        # Automatically remove the problematic channel
                         await remove_from_list(user_id, 'post_channels', channel_id)
-                        # Inform the user
                         await self.send_message(
                             user_id,
                             f"⚠️ **Auto-Posting Disabled for Channel**\n\n"
@@ -135,17 +132,14 @@ class Bot(Client):
                         )
                     except (WebpageCurlFailed, WebpageMediaEmpty):
                         logger.warning(f"Failed to send poster to channel {channel_id} (URL invalid or empty). Sending post as text-only.")
-                        # Fallback to sending as a text message if the poster URL is bad
                         await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
                     except FloodWait as e:
                         logger.warning(f"FloodWait in channel {channel_id}. Sleeping for {e.value} seconds.")
                         await asyncio.sleep(e.value)
-                        # Retry after the flood wait
-                        await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
+                        await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard) # Retry
                     except Exception as e:
                         logger.error(f"An unexpected error occurred while posting to {channel_id} for user {user_id}: {e}")
                         try:
-                            # Notify user of other unexpected errors
                             await self.send_message(user_id, f"An unexpected error occurred while posting to channel `{channel_id}`.\n\n`{e}`")
                         except Exception:
                              logger.error(f"Failed to send error notification to user {user_id}")
@@ -153,7 +147,6 @@ class Bot(Client):
         except Exception:
             logger.exception(f"A major error occurred in process_batch_task for user {user_id}")
         finally:
-            # Clean up locks and batch data
             if user_id in self.batch_locks and batch_key in self.batch_locks.get(user_id, {}):
                 del self.batch_locks[user_id][batch_key]
             if user_id in self.file_batch and not self.file_batch.get(user_id, {}):
