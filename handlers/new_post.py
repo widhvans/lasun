@@ -9,7 +9,7 @@ from utils.helpers import extract_file_details
 logger = logging.getLogger(__name__)
 
 def get_batch_key(filename: str):
-    """Creates a batching key based on the 'clean_title' and year."""
+    """Creates a batching key based on the 'clean_title' and year for perfect grouping."""
     details = extract_file_details(filename)
     title = details.get('clean_title', 'untitled').strip()
     year = details.get('year', '0000')
