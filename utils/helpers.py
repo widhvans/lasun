@@ -9,19 +9,15 @@ from features.poster import get_poster
 logger = logging.getLogger(__name__)
 
 def extract_file_details(filename: str):
-    """
-    Final Boss of filename cleaning. Extracts the absolute cleanest details.
-    """
+    """Final Boss of filename cleaning. Extracts the absolute cleanest details."""
     details = {'original_name': filename, 'clean_title': None, 'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None}
     
     base_name = filename.rsplit('.', 1)[0]
     
-    # Year Extraction
     year_match = re.search(r'\b(19[89]\d|20\d{2})\b', base_name)
     if year_match:
         details['year'] = year_match.group(1)
 
-    # Series Extraction
     se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', base_name)
     if se_match:
         details.update({'type': 'series', 'season': int(se_match.group(1)), 'episode': int(se_match.group(2))})
@@ -33,23 +29,21 @@ def extract_file_details(filename: str):
         if season_match:
             details.update({'type': 'series', 'season': int(season_match.group(2))})
 
-    # Resolution Extraction
     res_match = re.search(r'\b(2160p|1080p|720p|480p)\b', base_name, re.IGNORECASE)
     if res_match:
         details['resolution'] = res_match.group(1)
 
-    # Title Cleaning
     title_strip = base_name
     stop_point_match = re.search(r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE)\b', title_strip, re.IGNORECASE)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
     
-    title_strip = re.sub(r'\[.*?\]', '', title_strip) # Remove content in brackets
+    title_strip = re.sub(r'\[.*?\]', '', title_strip)
     title_strip = title_strip.replace('.', ' ').replace('_', ' ').strip()
     details['clean_title'] = ' '.join(title_strip.split())
     
     if not details['clean_title']:
-        details['clean_title'] = base_name.replace('.', ' ') # Fallback
+        details['clean_title'] = base_name.replace('.', ' ')
         
     return details
 
@@ -68,7 +62,6 @@ async def create_post(client, user_id, messages):
     bot_username = client.me.username
     all_details = [extract_file_details(getattr(m, m.media.value).file_name) for m in messages]
     
-    # Sort to process episodes in order
     all_details.sort(key=lambda d: d.get('episode') or 0)
     
     base_details = all_details[0]
@@ -76,37 +69,26 @@ async def create_post(client, user_id, messages):
     year = base_details['year']
     is_series = any(d['type'] == 'series' for d in all_details)
     
-    # --- The Deduplicator Logic ---
     final_links = {}
     for idx, details in enumerate(all_details):
         media = getattr(messages[idx], messages[idx].media.value)
-        
-        if is_series:
-            key = f"ep_{details.get('episode', 0)}"
-        else:
-            key = details.get('resolution', 'SD')
-
+        key = f"ep_{details.get('episode', 0)}" if is_series else details.get('resolution', 'SD')
         final_links[key] = {
             'label': create_link_label(details),
             'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
         }
         
-    # Build Post Header
     header = f"🎬 **{title}**"
     if year: header += f" **({year})**"
     
-    # Get Poster
     post_poster = await get_poster(title, year)
 
-    # Build Links Section
     links_text = ""
     sorted_keys = sorted(final_links.keys(), key=lambda x: (isinstance(x, str) and x.startswith('ep_'), x))
-
     for key in sorted_keys:
         link_info = final_links[key]
         links_text += f"✨ **{link_info['label']}** ➠ [Watch / Download]({link_info['url']})\n"
         
-    # Assemble Final Post
     separator = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
     final_caption = f"{header}\n\nミ★ ᴅᴏᴡɴʟᴏᴀᴅ ʟɪɴᴋs ★彡\n{separator}\n\n{links_text.strip()}\n\n{separator}"
     
@@ -117,8 +99,6 @@ async def create_post(client, user_id, messages):
         footer_keyboard = InlineKeyboardMarkup(buttons)
         
     return post_poster, final_caption, footer_keyboard
-
-# --- HELPER FUNCTIONS ---
 
 def natural_sort_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
@@ -146,11 +126,12 @@ def go_back_button(user_id):
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
 
 def encode_link(text: str) -> str:
-    """Safely encodes text for URL and callback data."""
     return base64.urlsafe_b64encode(text.encode()).decode().strip("=")
 
 def decode_link(encoded_text: str) -> str:
-    """Decodes the safe text back to its original form."""
     padding = 4 - (len(encoded_text) % 4)
     encoded_text += "=" * padding
     return base64.urlsafe_b64decode(encoded_text).decode()
+
+async def get_file_raw_link(message):
+    return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
