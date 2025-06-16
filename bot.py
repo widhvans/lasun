@@ -10,7 +10,7 @@ from utils.helpers import create_post
 from handlers.new_post import get_batch_key
 from pyrogram.errors import (
     ChatAdminRequired, UserNotParticipant, FloodWait,
-    WebpageCurlFailed, ChannelPrivate
+    WebpageCurlFailed, ChannelPrivate, WebpageMediaEmpty
 )
 
 # Setup logging
@@ -133,8 +133,8 @@ class Bot(Client):
                             f"I have **automatically removed it** from your post channels to prevent further errors.\n\n"
                             f"**To fix this:**\n1. Make me an admin in that channel again.\n2. Re-add the channel in `Settings > Manage Auto Post`."
                         )
-                    except WebpageCurlFailed:
-                        logger.warning(f"WebpageCurlFailed for poster in channel {channel_id}. Sending post as text-only.")
+                    except (WebpageCurlFailed, WebpageMediaEmpty):
+                        logger.warning(f"Failed to send poster to channel {channel_id} (URL invalid or empty). Sending post as text-only.")
                         # Fallback to sending as a text message if the poster URL is bad
                         await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
                     except FloodWait as e:
