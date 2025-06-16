@@ -78,18 +78,14 @@ async def create_post(client, user_id, messages):
     
     # --- The Deduplicator Logic ---
     final_links = {}
-    for details in all_details:
-        media = getattr(messages[all_details.index(details)], messages[all_details.index(details)].media.value)
+    for idx, details in enumerate(all_details):
+        media = getattr(messages[idx], messages[idx].media.value)
         
-        # For series, the key is the episode number.
-        # For movies, the key is the resolution.
         if is_series:
             key = f"ep_{details.get('episode', 0)}"
         else:
-            key = details.get('resolution', 'SD') # Default to 'SD' if no resolution found
+            key = details.get('resolution', 'SD')
 
-        # Store the link, overwriting any previous entry for the same key.
-        # This ensures only one link per quality/episode.
         final_links[key] = {
             'label': create_link_label(details),
             'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
@@ -104,7 +100,6 @@ async def create_post(client, user_id, messages):
 
     # Build Links Section
     links_text = ""
-    # Sort keys for consistent order (episodes first, then resolutions)
     sorted_keys = sorted(final_links.keys(), key=lambda x: (isinstance(x, str) and x.startswith('ep_'), x))
 
     for key in sorted_keys:
@@ -123,7 +118,11 @@ async def create_post(client, user_id, messages):
         
     return post_poster, final_caption, footer_keyboard
 
-# --- UNCHANGED HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS ---
+
+def natural_sort_key(s: str):
+    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
+
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
@@ -145,3 +144,13 @@ async def get_main_menu(user_id):
 
 def go_back_button(user_id):
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
+
+def encode_link(text: str) -> str:
+    """Safely encodes text for URL and callback data."""
+    return base64.urlsafe_b64encode(text.encode()).decode().strip("=")
+
+def decode_link(encoded_text: str) -> str:
+    """Decodes the safe text back to its original form."""
+    padding = 4 - (len(encoded_text) % 4)
+    encoded_text += "=" * padding
+    return base64.urlsafe_b64decode(encoded_text).decode()
