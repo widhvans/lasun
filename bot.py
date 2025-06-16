@@ -1,6 +1,7 @@
 import logging
 import os
 import asyncio
+import aiohttp
 from pyromod import Client
 from aiohttp import web
 from config import Config
@@ -144,6 +145,7 @@ class Bot(Client):
                         with open("./resources/font.ttf", "wb") as f: f.write(await resp.read())
         except Exception as e:
             logger.warning(f"Could not download fallback font, will use default. Error: {e}")
+
 
         self.owner_db_channel_id = await get_owner_db_channel()
         if self.owner_db_channel_id: logger.info(f"Loaded Owner DB ID [{self.owner_db_channel_id}]")
