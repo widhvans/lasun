@@ -12,16 +12,10 @@ logger = logging.getLogger(__name__)
 def get_batch_key(filename: str):
     """
     Creates a batching key based on the most aggressively cleaned title and year.
-    This ensures all files for a movie or a full series are grouped together.
-    e.g., "Mirzapur (2018)" becomes the key for S01, S02, etc.
     """
     details = extract_file_details(filename)
-    # Using the 'clean_title' is key to accurate batching
     title = details.get('clean_title', 'untitled').strip()
     year = details.get('year', '0000')
-    
-    # For series and movies, group by the cleaned title and year
-    # This is robust enough to handle both cases correctly
     return f"{title}_{year}".lower()
 
 @Client.on_message(filters.channel & (filters.document | filters.video | filters.audio), group=2)
@@ -31,21 +25,17 @@ async def new_file_handler(client, message):
     set by the bot at startup. The logic is self-contained in the worker.
     """
     try:
-        # Determine the owner of the content based on the DB channel it came from
         user_id = await find_owner_by_db_channel(message.chat.id)
         if not user_id: 
-            # If not found, maybe it's the admin posting in their own channel
             if hasattr(client, 'owner_db_channel_id') and message.chat.id == client.owner_db_channel_id and Config.ADMIN_ID:
                  user_id = Config.ADMIN_ID
             else:
-                return # Not a channel we are tracking for any user
+                return
 
         media = getattr(message, message.media.value, None)
         if not media or not getattr(media, 'file_name', None):
             return
         
-        # The worker (in bot.py) now handles copying to the owner DB and saving data
-        # We just need to queue the original message and its owner
         await client.file_queue.put((message, user_id))
         logger.info(f"Added file '{media.file_name}' to the processing queue for user {user_id}.")
 
