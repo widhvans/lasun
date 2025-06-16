@@ -16,7 +16,7 @@ def get_batch_key(filename: str):
     e.g., "Mirzapur (2018)" becomes the key for S01, S02, etc.
     """
     details = extract_file_details(filename)
-    title = details.get('title', 'untitled')
+    title = details.get('clean_title', 'untitled')
     year = details.get('year', '0000')
     
     # For series, we group by title and year to batch all seasons together
@@ -53,7 +53,3 @@ async def new_file_handler(client, message):
 
     except Exception as e:
         logger.exception(f"Error in new_file_handler while adding to queue: {e}")
-
-# Note: The process_batch logic has been fully moved into bot.py's worker
-# and the create_post helper in helpers.py. This file is now just for
-# capturing new messages and adding them to the queue.
