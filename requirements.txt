@@ -4,3 +4,6 @@ motor
 aiohttp
 beautifulsoup4
 pyromod
+Pillow
+python-telegraph
+cinemagoer
