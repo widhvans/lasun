@@ -34,7 +34,7 @@ def extract_file_details(filename: str):
         details['resolution'] = res_match.group(1)
 
     title_strip = base_name
-    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}[eE]\d{1,3}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01)\b'
+    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}[eE]\d{1,3}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01|Marathi|Hindi|HDTS)\b'
     stop_point_match = re.search(stop_regex, title_strip, re.IGNORECASE)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
@@ -71,7 +71,6 @@ async def create_post(client, user_id, messages):
     year = base_details['year']
     is_series = any(d['type'] == 'series' for d in all_details)
     
-    # --- The Deduplicator Engine ---
     final_links = {}
     for idx, details in enumerate(all_details):
         media = getattr(messages[idx], messages[idx].media.value)
@@ -81,20 +80,17 @@ async def create_post(client, user_id, messages):
             'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
         }
         
-    # --- Build Post with New Professional Design ---
     header = f"🎬  **{title}**"
     if year: header += f"  `({year})`"
     
     post_poster = await get_poster(title, year)
 
     links_text = ""
-    # Sort keys for consistent order (episodes first, then resolutions)
     sorted_keys = sorted(final_links.keys(), key=lambda x: (str(x).startswith('ep_'), x))
     for key in sorted_keys:
         link_info = final_links[key]
         links_text += f"✨  **{link_info['label']}** ➠  [Watch / Download]({link_info['url']})\n"
         
-    # New, more elegant separator and layout
     separator = "· · ─────── ·𖥸· ─────── · ·"
     final_caption = f"{header}\n\n{separator}\n\n{links_text.strip()}\n\n{separator}"
     
@@ -106,9 +102,20 @@ async def create_post(client, user_id, messages):
         
     return post_poster, final_caption, footer_keyboard
 
-# --- UNCHANGED HELPER FUNCTIONS ---
-def natural_sort_key(s: str):
-    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
+def go_back_button(user_id):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
+
+def encode_link(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode().strip("=")
+
+def decode_link(encoded_text: str) -> str:
+    padding = 4 - (len(encoded_text) % 4)
+    encoded_text += "=" * padding
+    return base64.urlsafe_b64decode(encoded_text).decode()
+
+async def get_file_raw_link(message):
+    return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
+
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
@@ -127,13 +134,3 @@ async def get_main_menu(user_id):
         buttons.append([InlineKeyboardButton("🔑 Set Owner DB", callback_data="set_owner_db")])
         buttons.append([InlineKeyboardButton("⚠️ Reset Files DB", callback_data="reset_db_prompt")])
     return InlineKeyboardMarkup(buttons)
-def go_back_button(user_id):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
-def encode_link(text: str) -> str:
-    return base64.urlsafe_b64encode(text.encode()).decode().strip("=")
-def decode_link(encoded_text: str) -> str:
-    padding = 4 - (len(encoded_text) % 4)
-    encoded_text += "=" * padding
-    return base64.urlsafe_b64decode(encoded_text).decode()
-async def get_file_raw_link(message):
-    return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
