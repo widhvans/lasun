@@ -10,10 +10,7 @@ from utils.helpers import create_post, extract_file_details
 logger = logging.getLogger(__name__)
 
 def get_batch_key(filename: str):
-    """
-    Creates a batching key based on the 'clean_title' and year.
-    This is the key to perfect batching.
-    """
+    """Creates a batching key based on the 'clean_title' and year."""
     details = extract_file_details(filename)
     title = details.get('clean_title', 'untitled').strip()
     year = details.get('year', '0000')
