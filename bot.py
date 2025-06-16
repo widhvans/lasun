@@ -1,43 +1,18 @@
 import logging
 import sys
-import os
 import asyncio
 from pyromod import Client
-from aiohttp import web
 from config import Config
-from database.db import get_user, save_file_data, get_owner_db_channel
+from database.db import get_user, save_file_data
 from utils.helpers import create_post
 from handlers.new_post import get_batch_key
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                    handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("pyromod").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-
-# Web Server Handler
-async def handle_redirect(request):
-    file_unique_id = request.match_info.get('file_unique_id', None)
-    if not file_unique_id:
-        return web.Response(text="File ID missing.", status=400)
-    try:
-        with open(Config.BOT_USERNAME_FILE, 'r') as f:
-            bot_username = f.read().strip().replace("@", "")
-    except FileNotFoundError:
-        logger.error(f"FATAL: Bot username file not found at {Config.BOT_USERNAME_FILE}")
-        return web.Response(text="Bot configuration error.", status=500)
-    payload = f"get_{file_unique_id}"
-    telegram_url = f"https://t.me/{bot_username}?start={payload}"
-    return web.HTTPFound(telegram_url)
-
 
 class Bot(Client):
     def __init__(self):
@@ -47,9 +22,6 @@ class Bot(Client):
             plugins=dict(root="handlers")
         )
         self.me = None
-        self.owner_db_channel_id = None
-        self.web_app = None
-        self.web_runner = None
         self.file_queue = asyncio.Queue()
         self.file_batch = {}
         self.batch_locks = {}
@@ -61,16 +33,7 @@ class Bot(Client):
             try:
                 message_to_process, user_id = await self.file_queue.get()
                 
-                # Check for the ID on each run, in case it was just set
-                if not self.owner_db_channel_id:
-                    self.owner_db_channel_id = await get_owner_db_channel()
-
-                if not self.owner_db_channel_id:
-                    logger.error("Owner DB not set. Worker is sleeping for 60s.")
-                    await asyncio.sleep(60)
-                    continue
-
-                copied_message = await message_to_process.copy(chat_id=self.owner_db_channel_id)
+                copied_message = await message_to_process.copy(chat_id=Config.OWNER_DATABASE_CHANNEL)
                 await save_file_data(owner_id=user_id, original_message=message_to_process, copied_message=copied_message)
                 
                 filename = getattr(copied_message, copied_message.media.value).file_name
@@ -87,16 +50,19 @@ class Bot(Client):
                     else:
                         self.file_batch[user_id][batch_key].append(copied_message)
                 
-                await asyncio.sleep(2)
-            except Exception:
+                await asyncio.sleep(2) # Safe delay between processing files
+            except Exception as e:
                 logger.exception("Error in file processor worker")
+                try:
+                    await self.send_message(Config.ADMIN_ID, f"⚠️ **A critical error occurred in the file processor worker.**\n\n`{e}`\n\nPlease check my logs and your bot's admin status in the Owner Database Channel.")
+                except: pass
             finally:
                 self.file_queue.task_done()
 
     async def process_batch_task(self, user_id, batch_key):
         """The task that waits and posts a batch of files."""
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(2) # Near instant posting
             if user_id not in self.batch_locks or batch_key not in self.batch_locks.get(user_id, {}): return
             async with self.batch_locks[user_id][batch_key]:
                 messages = self.file_batch[user_id].pop(batch_key, [])
@@ -119,46 +85,21 @@ class Bot(Client):
         except Exception:
             logger.exception(f"An error occurred in process_batch_task for user {user_id}")
         finally:
+            # Cleanup
             if user_id in self.batch_locks and batch_key in self.batch_locks.get(user_id, {}): del self.batch_locks[user_id][batch_key]
             if user_id in self.file_batch and not self.file_batch.get(user_id, {}): del self.file_batch[user_id]
             if user_id in self.batch_locks and not self.batch_locks.get(user_id, {}): del self.batch_locks[user_id]
 
-    async def start_web_server(self):
-        self.web_app = web.Application()
-        self.web_app.router.add_get('/get/{file_unique_id}', handle_redirect)
-        self.web_runner = web.AppRunner(self.web_app)
-        await self.web_runner.setup()
-        site = web.TCPSite(self.web_runner, Config.VPS_IP, Config.VPS_PORT)
-        await site.start()
-        logger.info(f"Web redirector server started at http://{Config.VPS_IP}:{Config.VPS_PORT}")
-
     async def start(self):
         await super().start()
         self.me = await self.get_me()
+        logger.info(f"Bot @{self.me.username} logged in successfully.")
         
-        # Load the Owner DB Channel ID from the database into the bot's memory
-        self.owner_db_channel_id = await get_owner_db_channel()
-        if self.owner_db_channel_id:
-            logger.info(f"Successfully loaded Owner Database ID [{self.owner_db_channel_id}] from database.")
-        else:
-            logger.warning("Owner Database ID is not yet set. Please use the 'Set Owner DB' button as admin.")
-
-        try:
-            with open(Config.BOT_USERNAME_FILE, 'w') as f:
-                f.write(f"@{self.me.username}")
-            logger.info(f"Successfully updated bot username to @{self.me.username} in {Config.BOT_USERNAME_FILE}")
-        except Exception as e:
-            logger.error(f"Could not write to {Config.BOT_USERNAME_FILE}. Error: {e}")
-        
-        # Start the worker and web server
         asyncio.create_task(self.file_processor_worker())
-        await self.start_web_server()
-        logger.info(f"Bot @{self.me.username} and all services started successfully.")
+        logger.info("All services started successfully.")
 
     async def stop(self, *args):
-        logger.info("Stopping bot and web server...")
-        if self.web_runner:
-            await self.web_runner.cleanup()
+        logger.info("Stopping bot...")
         await super().stop()
         logger.info("Bot stopped.")
 
