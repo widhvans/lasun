@@ -15,6 +15,7 @@ from pyrogram.errors import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("pyromod").setLevel(logging.WARNING)
+logging.getLogger("imdbpy").setLevel(logging.WARNING) # Suppress Cinemagoer's own logs
 logger = logging.getLogger(__name__)
 
 async def handle_redirect(request):
@@ -84,7 +85,7 @@ class Bot(Client):
 
     async def process_batch_task(self, user_id, batch_key):
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(15) # Increased delay to ensure all files in a batch are collected
             if user_id not in self.batch_locks or batch_key not in self.batch_locks.get(user_id, {}): return
             async with self.batch_locks[user_id][batch_key]:
                 messages = self.file_batch[user_id].pop(batch_key, [])
@@ -98,22 +99,19 @@ class Bot(Client):
                 
                 for channel_id in user.get('post_channels', []).copy():
                     try:
-                        if poster:
-                            await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
-                        else: # This path should ideally never be taken now
-                            await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
-                        await asyncio.sleep(3)
+                        await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
+                        await asyncio.sleep(3) # Be a good citizen
                     except FloodWait as e:
-                        logger.warning(f"FloodWait in {channel_id}. Sleeping for {e.value}s.")
-                        await asyncio.sleep(e.value)
+                        logger.warning(f"FloodWait in {channel_id}. Sleeping for {e.value + 5} seconds.")
+                        await asyncio.sleep(e.value + 5)
                         await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard) # Retry
                     except (ChannelPrivate, ChatAdminRequired, UserNotParticipant):
                         logger.error(f"PERMISSION ERROR in {channel_id} for user {user_id}. Removing channel.")
                         await remove_from_list(user_id, 'post_channels', channel_id)
                         await self.send_message(user_id, f"⚠️ **Auto-Posting Disabled**\nI failed to post to channel ID `{channel_id}` because I'm not an admin or it's private. I've removed it from your settings.")
                     except (WebpageCurlFailed, WebpageMediaEmpty) as e:
-                        logger.warning(f"Poster URL failed for {channel_id}: {e}. Sending as text.")
-                        await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
+                        logger.warning(f"Telegraph URL failed for {channel_id}: {e}. This should not happen. Notifying user.")
+                        await self.send_message(user_id, f"A temporary error occurred with the poster for `{batch_key}`. Please try sending the file again.")
                     except Exception as e:
                         logger.error(f"Unexpected error posting to {channel_id} for user {user_id}: {e}")
                         try:
@@ -138,18 +136,14 @@ class Bot(Client):
         await super().start()
         self.me = await self.get_me()
         
-        # Create resources directory if it doesn't exist
         os.makedirs("resources", exist_ok=True)
-        # Download a default font for the fallback image generator
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get("https://github.com/google/fonts/raw/main/ofl/opensans/OpenSans-Bold.ttf") as resp:
                     if resp.status == 200:
-                        with open("./resources/font.ttf", "wb") as f:
-                            f.write(await resp.read())
+                        with open("./resources/font.ttf", "wb") as f: f.write(await resp.read())
         except Exception as e:
             logger.warning(f"Could not download fallback font, will use default. Error: {e}")
-
 
         self.owner_db_channel_id = await get_owner_db_channel()
         if self.owner_db_channel_id: logger.info(f"Loaded Owner DB ID [{self.owner_db_channel_id}]")
