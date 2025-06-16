@@ -40,8 +40,8 @@ class Bot(Client):
         self.web_runner = None
         self.file_queue = asyncio.Queue()
         self.file_batch = {}
-        self.batch_timers = {} # New timer-based batching
-        self.batch_locks = {}
+        self.batch_timers = {}
+        self.batch_locks = asyncio.Lock()
 
     async def file_processor_worker(self):
         logger.info("File processor worker started.")
@@ -71,34 +71,35 @@ class Bot(Client):
                 filename = getattr(copied_message, copied_message.media.value).file_name
                 batch_key = get_batch_key(filename)
 
-                if user_id not in self.file_batch:
-                    self.file_batch[user_id] = {}
-                    self.batch_timers[user_id] = {}
-                
-                # Add file to the batch
-                if batch_key not in self.file_batch[user_id]:
-                    self.file_batch[user_id][batch_key] = []
-                self.file_batch[user_id][batch_key].append(copied_message)
+                async with self.batch_locks:
+                    if user_id not in self.file_batch:
+                        self.file_batch[user_id] = {}
+                        self.batch_timers[user_id] = {}
+                    
+                    if batch_key not in self.file_batch[user_id]:
+                        self.file_batch[user_id][batch_key] = []
+                    self.file_batch[user_id][batch_key].append(copied_message)
 
-                # Reset the timer for this batch
-                if batch_key in self.batch_timers[user_id]:
-                    self.batch_timers[user_id][batch_key].cancel()
-                
-                self.batch_timers[user_id][batch_key] = asyncio.get_event_loop().call_later(
-                    15, # 15-second wait for more files
-                    lambda: asyncio.create_task(self.process_batch_task(user_id, batch_key))
-                )
-                
+                    if batch_key in self.batch_timers[user_id]:
+                        self.batch_timers[user_id][batch_key].cancel()
+                    
+                    self.batch_timers[user_id][batch_key] = asyncio.get_event_loop().call_later(
+                        15,
+                        lambda uid=user_id, bk=batch_key: asyncio.create_task(self.process_batch_task(uid, bk))
+                    )
             except Exception:
                 logger.exception("Error in file processor worker")
             finally:
                 if 'self.file_queue' in locals() and self.file_queue: self.file_queue.task_done()
 
     async def process_batch_task(self, user_id, batch_key):
-        if user_id not in self.file_batch or batch_key not in self.file_batch[user_id]:
-            return
-
-        messages = self.file_batch[user_id].pop(batch_key)
+        async with self.batch_locks:
+            if user_id not in self.file_batch or batch_key not in self.file_batch[user_id]:
+                return
+            messages = self.file_batch[user_id].pop(batch_key, [])
+            if user_id in self.batch_timers and batch_key in self.batch_timers[user_id]:
+                self.batch_timers[user_id].pop(batch_key)
+        
         if not messages: return
         
         try:
@@ -128,10 +129,6 @@ class Bot(Client):
                          logger.error(f"Failed to send error notification to user {user_id}")
         except Exception:
             logger.exception(f"Major error in process_batch_task for user {user_id}")
-        finally:
-            # Cleanup timer reference
-            if user_id in self.batch_timers and batch_key in self.batch_timers[user_id]:
-                del self.batch_timers[user_id][batch_key]
 
     async def start_web_server(self):
         self.web_app = web.Application()
