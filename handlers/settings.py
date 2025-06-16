@@ -9,7 +9,7 @@ from database.db import (
     get_user_file_count, add_footer_button, remove_footer_button, 
     get_all_user_files, get_paginated_files, search_user_files
 )
-from utils.helpers import go_back_button, get_main_menu, create_post, encode_link
+from utils.helpers import go_back_button, get_main_menu, create_post, encode_link, decode_link
 from handlers.new_post import get_batch_key
 
 logger = logging.getLogger(__name__)
@@ -132,11 +132,11 @@ async def my_files_handler(client, query):
                 text += "No more files found on this page."
             else:
                 for file in files_on_page:
-                    # FIX: Use file_unique_id for the payload
-                    payload = f"get_{file['file_unique_id']}"
+                    # **THE FIX**: Use 'directget_' prefix for shortener-free access
+                    payload = f"directget_{file['file_unique_id']}"
                     deep_link = f"https://t.me/{bot_username}?start={payload}"
                     text += f"**File:** `{file['file_name']}`\n**Link:** [Click Here to Get File]({deep_link})\n\n"
-                
+                    
         buttons, nav_row = [], []
         if page > 1:
             nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"my_files_{page-1}"))
@@ -160,12 +160,13 @@ async def _format_and_send_search_results(client, query, user_id, search_query, 
         text += "No files found for your query."
     else:
         for file in files_list:
-            payload = f"get_{file['file_unique_id']}"
+            # **THE FIX**: Use 'directget_' prefix for shortener-free access
+            payload = f"directget_{file['file_unique_id']}"
             deep_link = f"https://t.me/{bot_username}?start={payload}"
             text += f"**File:** `{file['file_name']}`\n**Link:** [Click Here to Get File]({deep_link})\n\n"
     buttons = []
     nav_row = []
-    encoded_query = base64.urlsafe_b64encode(search_query.encode()).decode().strip("=")
+    encoded_query = encode_link(search_query)
     if page > 1:
         nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"search_results_{page-1}_{encoded_query}"))
     if total_files > page * files_per_page:
@@ -185,6 +186,8 @@ async def search_my_files_prompt(client, query):
         response = await client.listen(chat_id=user_id, timeout=300, filters=filters.text)
         search_query = response.text
         await response.delete()
+        await prompt.delete() # clean up the prompt message
+        # Use query.message from original callback to edit, not the deleted prompt
         await _format_and_send_search_results(client, query, user_id, search_query, 1)
     except asyncio.TimeoutError:
         await safe_edit_message(query, text="❗️ **Timeout:** Search cancelled.", reply_markup=go_back_button(user_id))
@@ -196,18 +199,17 @@ async def search_my_files_prompt(client, query):
 async def search_results_paginator(client, query):
     try:
         user_id = query.from_user.id
-        page = int(query.matches[0].group(1))
-        encoded_query = query.matches[0].group(2)
-        padding = 4 - (len(encoded_query) % 4)
-        search_query = base64.urlsafe_b64decode(encoded_query + "=" * padding).decode()
+        page, encoded_query = query.matches[0].groups()
+        page = int(page)
+        search_query = decode_link(encoded_query)
         await _format_and_send_search_results(client, query, user_id, search_query, page)
     except Exception as e:
         logger.exception("Error during search pagination")
         await safe_edit_message(query, text="An error occurred during pagination.")
 
 
-# --- BACKUP, FOOTERS, CHANNELS, AND OTHER SETTINGS ---
-
+# --- BACKUP, FOOTERS, CHANNELS, AND OTHER SETTINGS (UNCHANGED) ---
+# ... (rest of the file is unchanged) ...
 @Client.on_callback_query(filters.regex("backup_links"))
 async def backup_links_handler(client, query):
     user_id = query.from_user.id
@@ -222,7 +224,7 @@ async def backup_links_handler(client, query):
         except: continue
     if not kb: return await query.answer("Could not access any of your Post Channels.", show_alert=True)
     kb.append([InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")])
-    await safe_edit_message(query, text="**🔄 Smart Backup**\n\nSelect a channel.", reply_markup=InlineKeyboardMarkup(kb))
+    await safe_edit_message(query, text="**🔄 Smart Backup**\n\nSelect a channel to post all your saved files.", reply_markup=InlineKeyboardMarkup(kb))
 
 @Client.on_callback_query(filters.regex(r"start_backup_-?\d+"))
 async def start_backup_process(client, query):
@@ -231,35 +233,42 @@ async def start_backup_process(client, query):
     channel_id = int(query.data.split("_")[-1])
     ACTIVE_BACKUP_TASKS.add(user_id)
     try:
-        progress_msg = await query.message.edit_text("⏳ `Step 1/3:` Fetching file records...")
-        all_files_cursor = await get_all_user_files(user_id)
+        await query.message.edit_text("⏳ `Step 1/3:` Fetching all file records...")
+        all_files_cursor = get_all_user_files(user_id)
+        
         batches = {}
         async for file_doc in all_files_cursor:
             if not file_doc or not file_doc.get('file_name'): continue
             batch_key = get_batch_key(file_doc['file_name'])
             if batch_key not in batches: batches[batch_key] = []
             batches[batch_key].append(file_doc)
+        
         total_batches = len(batches)
         if total_batches == 0:
             return await safe_edit_message(query, text="You have no files to back up.", reply_markup=go_back_button(user_id))
         
-        await safe_edit_message(query, text=f"✅ `Step 2/3:` Found **{total_batches}** posts to create.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
+        await safe_edit_message(query, text=f"✅ `Step 2/3:` Found **{total_batches}** unique posts to create. Starting backup...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
         
         for i, (batch_key, file_docs) in enumerate(batches.items()):
             if user_id not in ACTIVE_BACKUP_TASKS:
-                await safe_edit_message(query, text="❌ Backup cancelled.", reply_markup=go_back_button(user_id))
+                await safe_edit_message(query, text="❌ Backup cancelled by user.", reply_markup=go_back_button(user_id))
                 return
             try:
+                # To recreate the post, we need the original message objects
+                # We fetch them from the owner's central database channel
                 message_ids = [int(doc['raw_link'].split('/')[-1]) for doc in file_docs]
                 source_chat_id = int("-100" + file_docs[0]['raw_link'].split('/')[-2])
                 file_messages = await client.get_messages(source_chat_id, message_ids)
+                
                 poster, caption, footer = await create_post(client, user_id, file_messages)
-                if poster: await client.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer)
-                else: await client.send_message(channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
+                if poster:
+                    await client.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer)
+                else:
+                    await client.send_message(channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
                 
                 progress_text = f"🔄 `Step 3/3:` Progress: {i + 1} / {total_batches} posts created."
                 await safe_edit_message(query, text=progress_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
-                await asyncio.sleep(3)
+                await asyncio.sleep(3) # Rate limit
             except Exception as e:
                 logger.exception(f"Failed to post batch '{batch_key}' during backup.")
                 await client.send_message(user_id, f"Failed to post batch for `{batch_key}`. Error: {e}")
@@ -278,9 +287,9 @@ async def cancel_backup_handler(client, query):
     if query.from_user.id != user_id: return await query.answer("This is not for you.", show_alert=True)
     if user_id in ACTIVE_BACKUP_TASKS:
         ACTIVE_BACKUP_TASKS.discard(user_id)
-        await query.answer("Cancellation signal sent.", show_alert=True)
+        await query.answer("Cancellation signal sent. The backup will stop after the current post.", show_alert=True)
     else:
-        await query.answer("No active backup process found.", show_alert=True)
+        await query.answer("No active backup process found to cancel.", show_alert=True)
 
 @Client.on_callback_query(filters.regex("manage_footer"))
 async def manage_footer_handler(client, query):
@@ -367,15 +376,16 @@ async def add_channel_prompt(client, query):
         return await query.answer("You can only connect up to 3 Post Channels.", show_alert=True)
     question = None
     try:
-        question = await query.message.reply_text(f"Forward a message from your target **{ch_type_name} Channel**.", reply_markup=go_back_button(user_id))
+        question = await query.message.edit_text(f"Forward a message from your target **{ch_type_name} Channel**.", reply_markup=go_back_button(user_id))
         response = await client.listen(chat_id=user_id, filters=filters.forwarded, timeout=300)
         if response.forward_from_chat:
             await add_to_list(user_id, ch_type_key, response.forward_from_chat.id)
             await response.reply_text(f"✅ Connected to **{response.forward_from_chat.title}**.", reply_markup=go_back_button(user_id))
         else: await response.reply_text("Not a valid forwarded message.", reply_markup=go_back_button(user_id))
-        await question.delete()
+        if question: await question.delete()
+        await query.message.delete()
     except asyncio.TimeoutError:
-        if question: await safe_edit_message(question, text="Command timed out.")
+        if question: await safe_edit_message(query, text="Command timed out.")
     except Exception as e:
         await query.message.reply_text(f"An error occurred: {e}", reply_markup=go_back_button(user_id))
 
