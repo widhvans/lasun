@@ -35,24 +35,18 @@ async def _fetch_from_imdb(session, search_query):
     return None
 
 async def get_poster(clean_title: str, year: str = None):
-    """
-    The 'Hero' Poster Finder. It will not fail.
-    It tries multiple, increasingly broad scraping strategies before falling back.
-    """
+    """The 'Hero' Poster Finder. It will not fail."""
     async with aiohttp.ClientSession() as session:
-        # Attempt 1: The "Golden" Search (Clean Title + Year)
         if year:
             query = f"{clean_title} {year}"
             logger.info(f"Poster search (Attempt 1/2): Searching IMDb with '{query}'...")
             poster_url = await _fetch_from_imdb(session, query)
             if poster_url: return poster_url
 
-        # Attempt 2: Broader Search (Clean Title Only)
         logger.info(f"Poster search (Attempt 2/2): Searching IMDb with clean title '{clean_title}'...")
         poster_url = await _fetch_from_imdb(session, clean_title)
         if poster_url: return poster_url
 
-    # Final Fallback: A 100% Reliable Placeholder
     logger.warning(f"All scraping attempts failed for '{clean_title}'. Generating a reliable fallback placeholder.")
     placeholder_text = f"{clean_title}{f' ({year})' if year else ''}"
     return f"https://via.placeholder.com/500x750/000000/FFFFFF.png?text={quote_plus(placeholder_text)}"
