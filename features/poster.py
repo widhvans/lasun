@@ -7,6 +7,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import os
 import asyncio
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,6 @@ async def _upload_to_telegraph(session, image_url):
             if response.status == 200:
                 content = await response.read()
                 path = await aio_telegraph.upload_file(BytesIO(content))
-                # Correctly handle the response from the telegraph library
                 if isinstance(path, list) and path and isinstance(path[0], dict) and 'src' in path[0]:
                     return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
@@ -43,9 +43,9 @@ async def _generate_fallback_image(text):
     lines = []
     current_line = ""
     for word in words:
-        # Use textbbox for modern Pillow versions to avoid the 'textsize' error
+        # Use textbbox for modern Pillow versions
         bbox = draw.textbbox((0, 0), current_line + word, font=font)
-        if bbox[2] < 550: # Check width from bbox
+        if bbox[2] < 550:
             current_line += word + " "
         else:
             lines.append(current_line)
@@ -70,14 +70,44 @@ async def _generate_fallback_image(text):
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
     
-    # Ultimate fallback if Telegraph itself fails, guaranteeing a valid image URL
     return f"https://via.placeholder.com/600x800/0F0F0F/FFFFFF?text={quote_plus(text)}"
 
+async def _fetch_from_tmdb(session, title, year):
+    """Secondary Method: Scrapes poster from The Movie Database (TMDB)."""
+    try:
+        search_query = f"{title} {year}" if year else title
+        search_url = f"https://www.themoviedb.org/search?query={quote_plus(search_query)}"
+        headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.5'}
+        
+        async with session.get(search_url, headers=headers) as response:
+            if response.status != 200: return None
+            soup = BeautifulSoup(await response.text(), 'html.parser')
+            
+            result_card = soup.select_one("div.card.style_1 a.image")
+            if not result_card or not result_card.get('href'): return None
+            
+            media_url = "https://www.themoviedb.org" + result_card['href']
+            
+        async with session.get(media_url, headers=headers) as media_response:
+            if media_response.status != 200: return None
+            media_soup = BeautifulSoup(await media_response.text(), 'html.parser')
+            
+            poster_div = media_soup.select_one("div.poster img.poster")
+            if poster_div and poster_div.get('src'):
+                poster_path = poster_div['src']
+                full_poster_url = f"https://image.tmdb.org/t/p/original{poster_path}"
+                logger.info(f"Found poster on TMDB for '{title}'.")
+                return await _upload_to_telegraph(session, full_poster_url)
+    except Exception as e:
+        logger.error(f"An error occurred during TMDB scrape: {e}")
+    return None
+
 async def get_poster(clean_title: str, year: str = None):
-    """The 'Hero' Poster Finder. It will not fail."""
+    """The 'Hero' Poster Finder with a multi-layered approach."""
     logger.info(f"Poster search initiated for: Title='{clean_title}', Year='{year}'")
     search_query = f"{clean_title} {year}" if year else clean_title
 
+    # --- Attempt 1: Primary Source (Cinemagoer/IMDb) ---
     try:
         loop = asyncio.get_event_loop()
         movies = await loop.run_in_executor(None, lambda: ia.search_movie(search_query))
@@ -91,11 +121,20 @@ async def get_poster(clean_title: str, year: str = None):
                 async with aiohttp.ClientSession() as session:
                     telegraph_link = await _upload_to_telegraph(session, poster_url)
                     if telegraph_link:
-                        logger.info(f"Successfully processed poster for '{clean_title}' via Telegraph.")
+                        logger.info(f"Successfully processed poster for '{clean_title}' via Cinemagoer/Telegraph.")
                         return telegraph_link
     except Exception as e:
         logger.error(f"An error occurred during Cinemagoer search: {e}")
 
+    # --- Attempt 2: Secondary Source (TMDB Scraping) ---
+    logger.warning("Cinemagoer failed. Trying secondary source: TMDB.")
+    async with aiohttp.ClientSession() as session:
+        tmdb_link = await _fetch_from_tmdb(session, clean_title, year)
+        if tmdb_link:
+            logger.info(f"Successfully processed poster for '{clean_title}' via TMDB/Telegraph.")
+            return tmdb_link
+
+    # --- Attempt 3: Ultimate Fallback (Generate Image) ---
     logger.warning(f"All other methods failed. Generating fallback image for '{clean_title}'.")
     fallback_text = f"{clean_title}\n({year})" if year else clean_title
     return await _generate_fallback_image(fallback_text)
