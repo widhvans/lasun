@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 def get_batch_key(filename: str):
     """
-    Creates a batching key based on the most aggressively cleaned title and year.
+    Creates a batching key based on the 'clean_title' and year.
+    This is the key to perfect batching.
     """
     details = extract_file_details(filename)
     title = details.get('clean_title', 'untitled').strip()
@@ -20,10 +21,7 @@ def get_batch_key(filename: str):
 
 @Client.on_message(filters.channel & (filters.document | filters.video | filters.audio), group=2)
 async def new_file_handler(client, message):
-    """
-    This handler now uses the globally available client.owner_db_channel_id
-    set by the bot at startup. The logic is self-contained in the worker.
-    """
+    """Adds incoming files to the processing queue."""
     try:
         user_id = await find_owner_by_db_channel(message.chat.id)
         if not user_id: 
