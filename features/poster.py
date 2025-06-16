@@ -1,6 +1,8 @@
 import aiohttp
 from imdb import Cinemagoer
 import logging
+import asyncio
+import re
 from urllib.parse import quote_plus
 from telegraph.aio import Telegraph as AsyncTelegraph
 from io import BytesIO
@@ -19,7 +21,6 @@ async def _upload_to_telegraph(session, image_url):
         async with session.get(image_url) as response:
             if response.status == 200:
                 content = await response.read()
-                # Use aio_telegraph for async upload
                 path = await aio_telegraph.upload_file(BytesIO(content))
                 return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
@@ -37,12 +38,13 @@ async def _generate_fallback_image(text):
     image = Image.new('RGB', (600, 800), color=(15, 15, 15))
     draw = ImageDraw.Draw(image)
     
-    # Simple word wrap
+    # Word wrap logic
     words = text.split()
     lines = []
     current_line = ""
     for word in words:
-        if draw.textsize(current_line + word, font=font)[0] < 550:
+        # Use the modern textlength method to check width
+        if draw.textlength(current_line + word + " ", font=font) < 550:
             current_line += word + " "
         else:
             lines.append(current_line)
@@ -51,9 +53,13 @@ async def _generate_fallback_image(text):
 
     y_text = 300
     for line in lines:
-        width, height = draw.textsize(line, font=font)
-        draw.text(((600 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
-        y_text += height + 10
+        # Use textbbox to get width and height for centering
+        bbox = draw.textbbox((0, 0), line.strip(), font=font)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        
+        draw.text(((600 - width) / 2, y_text), line.strip(), font=font, fill=(255, 255, 255))
+        y_text += height + 15
 
     buffer = BytesIO()
     image.save(buffer, format="PNG")
@@ -64,8 +70,7 @@ async def _generate_fallback_image(text):
         return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
-        return "https://via.placeholder.com/500x750/000000/FFFFFF.png?text=Poster+Not+Found"
-
+        return "https://via.placeholder.com/600x800/0F0F0F/FFFFFF.png?text=Poster+Not+Found"
 
 async def get_poster(clean_title: str, year: str = None):
     """
@@ -78,13 +83,10 @@ async def get_poster(clean_title: str, year: str = None):
     search_query = f"{clean_title} {year}" if year else clean_title
 
     try:
-        # Search for the movie
         loop = asyncio.get_event_loop()
         movies = await loop.run_in_executor(None, lambda: ia.search_movie(search_query))
         
-        if not movies:
-            logger.warning(f"No results found on IMDb for query: '{search_query}'")
-        else:
+        if movies:
             movie_id = movies[0].movieID
             movie = await loop.run_in_executor(None, lambda: ia.get_movie(movie_id))
             
@@ -95,13 +97,9 @@ async def get_poster(clean_title: str, year: str = None):
                     if telegraph_link:
                         logger.info(f"Successfully processed poster for '{clean_title}' via Telegraph.")
                         return telegraph_link
-            else:
-                logger.warning(f"Found movie for '{clean_title}', but no poster URL was available.")
-
     except Exception as e:
         logger.error(f"An error occurred during Cinemagoer search: {e}")
 
-    # If all else fails, generate and upload a fallback image.
     logger.warning(f"All other methods failed. Generating fallback image for '{clean_title}'.")
     fallback_text = f"{clean_title}\n({year})" if year else clean_title
     return await _generate_fallback_image(fallback_text)
