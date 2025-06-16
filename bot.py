@@ -5,9 +5,13 @@ import asyncio
 from pyromod import Client
 from aiohttp import web
 from config import Config
-from database.db import get_user, save_file_data, get_owner_db_channel
+from database.db import get_user, save_file_data, get_owner_db_channel, remove_from_list
 from utils.helpers import create_post
 from handlers.new_post import get_batch_key
+from pyrogram.errors import (
+    ChatAdminRequired, UserNotParticipant, FloodWait,
+    WebpageCurlFailed, ChannelPrivate
+)
 
 # Setup logging
 logging.basicConfig(
@@ -61,19 +65,15 @@ class Bot(Client):
             try:
                 message_to_process, user_id = await self.file_queue.get()
                 
-                # FIX: Check for the ID on each run, in case it was just set by the admin
                 if not self.owner_db_channel_id:
                     self.owner_db_channel_id = await get_owner_db_channel()
 
                 if not self.owner_db_channel_id:
                     logger.error("Owner DB not set. Worker is sleeping for 60s. Please set it via the admin panel.")
                     await asyncio.sleep(60)
-                    # Put the item back in the queue to be re-processed later
                     await self.file_queue.put((message_to_process, user_id))
                     continue
 
-                # FIX: Use the dynamically loaded `self.owner_db_channel_id` instead of a static config variable.
-                # This was the source of the AttributeError.
                 copied_message = await message_to_process.copy(chat_id=self.owner_db_channel_id)
                 await save_file_data(owner_id=user_id, original_message=message_to_process, copied_message=copied_message)
                 
@@ -87,22 +87,19 @@ class Bot(Client):
                 async with self.batch_locks[user_id][batch_key]:
                     if batch_key not in self.file_batch.setdefault(user_id, {}):
                         self.file_batch[user_id][batch_key] = [copied_message]
-                        # Create a new task to process this new batch after a delay
                         asyncio.create_task(self.process_batch_task(user_id, batch_key))
                     else:
-                        # If a task for this batch is already scheduled, just add the message
                         self.file_batch[user_id][batch_key].append(copied_message)
                 
-                await asyncio.sleep(2) # Small delay between processing files
+                await asyncio.sleep(2)
             except Exception:
                 logger.exception("Error in file processor worker")
             finally:
                 self.file_queue.task_done()
 
     async def process_batch_task(self, user_id, batch_key):
-        """The task that waits and posts a batch of files."""
+        """The task that waits and posts a batch of files with smart error handling."""
         try:
-            # Wait for 10 seconds to collect all related files (e.g., all episodes of a season)
             await asyncio.sleep(10)
             if user_id not in self.batch_locks or batch_key not in self.batch_locks.get(user_id, {}): return
             async with self.batch_locks[user_id][batch_key]:
@@ -114,20 +111,49 @@ class Bot(Client):
 
                 poster, caption, footer_keyboard = await create_post(self, user_id, messages)
                 if not caption: return
-
-                for channel_id in user.get('post_channels', []):
+                
+                # Iterate over a copy of the list to allow safe removal within the loop
+                for channel_id in user.get('post_channels', []).copy():
                     try:
                         if poster:
                             await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
                         else:
                             await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
+                        await asyncio.sleep(3) # Delay between posts to avoid flood waits
+
+                    except (ChannelPrivate, ChatAdminRequired, UserNotParticipant):
+                        logger.error(f"PERMISSION ERROR in channel {channel_id} for user {user_id}. Removing channel from settings.")
+                        # Automatically remove the problematic channel
+                        await remove_from_list(user_id, 'post_channels', channel_id)
+                        # Inform the user
+                        await self.send_message(
+                            user_id,
+                            f"⚠️ **Auto-Posting Disabled for Channel**\n\n"
+                            f"I failed to post to the channel with ID `{channel_id}` because I am no longer an admin there or the channel is private.\n\n"
+                            f"I have **automatically removed it** from your post channels to prevent further errors.\n\n"
+                            f"**To fix this:**\n1. Make me an admin in that channel again.\n2. Re-add the channel in `Settings > Manage Auto Post`."
+                        )
+                    except WebpageCurlFailed:
+                        logger.warning(f"WebpageCurlFailed for poster in channel {channel_id}. Sending post as text-only.")
+                        # Fallback to sending as a text message if the poster URL is bad
+                        await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
+                    except FloodWait as e:
+                        logger.warning(f"FloodWait in channel {channel_id}. Sleeping for {e.value} seconds.")
+                        await asyncio.sleep(e.value)
+                        # Retry after the flood wait
+                        await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
                     except Exception as e:
-                        logger.error(f"Failed to post to channel {channel_id} for user {user_id}: {e}")
-                        await self.send_message(user_id, f"Error posting to `{channel_id}`: {e}")
+                        logger.error(f"An unexpected error occurred while posting to {channel_id} for user {user_id}: {e}")
+                        try:
+                            # Notify user of other unexpected errors
+                            await self.send_message(user_id, f"An unexpected error occurred while posting to channel `{channel_id}`.\n\n`{e}`")
+                        except Exception:
+                             logger.error(f"Failed to send error notification to user {user_id}")
+
         except Exception:
-            logger.exception(f"An error occurred in process_batch_task for user {user_id}")
+            logger.exception(f"A major error occurred in process_batch_task for user {user_id}")
         finally:
-            # Clean up locks and batch data for this specific task
+            # Clean up locks and batch data
             if user_id in self.batch_locks and batch_key in self.batch_locks.get(user_id, {}):
                 del self.batch_locks[user_id][batch_key]
             if user_id in self.file_batch and not self.file_batch.get(user_id, {}):
@@ -148,7 +174,6 @@ class Bot(Client):
         await super().start()
         self.me = await self.get_me()
         
-        # Load the Owner DB Channel ID from the database into the bot's memory on startup
         self.owner_db_channel_id = await get_owner_db_channel()
         if self.owner_db_channel_id:
             logger.info(f"Successfully loaded Owner Database ID [{self.owner_db_channel_id}] from database.")
@@ -162,7 +187,6 @@ class Bot(Client):
         except Exception as e:
             logger.error(f"Could not write to {Config.BOT_USERNAME_FILE}. Error: {e}")
         
-        # Start the worker and web server
         asyncio.create_task(self.file_processor_worker())
         await self.start_web_server()
         logger.info(f"Bot @{self.me.username} and all services started successfully.")
