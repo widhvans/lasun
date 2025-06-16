@@ -9,15 +9,20 @@ from features.poster import get_poster
 logger = logging.getLogger(__name__)
 
 def extract_file_details(filename: str):
-    """Final Boss of filename cleaning. Extracts the absolute cleanest details."""
+    """
+    The definitive filename processor. It ruthlessly cleans the filename to
+    isolate the true title, ensuring perfect batching.
+    """
     details = {'original_name': filename, 'clean_title': None, 'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None}
     
     base_name = filename.rsplit('.', 1)[0]
     
+    # Year Extraction
     year_match = re.search(r'\b(19[89]\d|20\d{2})\b', base_name)
     if year_match:
         details['year'] = year_match.group(1)
 
+    # Series Extraction
     se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', base_name)
     if se_match:
         details.update({'type': 'series', 'season': int(se_match.group(1)), 'episode': int(se_match.group(2))})
@@ -29,21 +34,28 @@ def extract_file_details(filename: str):
         if season_match:
             details.update({'type': 'series', 'season': int(season_match.group(2))})
 
+    # Resolution Extraction
     res_match = re.search(r'\b(2160p|1080p|720p|480p)\b', base_name, re.IGNORECASE)
     if res_match:
         details['resolution'] = res_match.group(1)
 
+    # --- Definitive Title Cleaning ---
+    # Start with the base name and remove everything after a potential stop point.
     title_strip = base_name
-    stop_point_match = re.search(r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE)\b', title_strip, re.IGNORECASE)
+    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01|E01)\b'
+    stop_point_match = re.search(stop_regex, title_strip, re.IGNORECASE)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
     
-    title_strip = re.sub(r'\[.*?\]', '', title_strip)
+    # Remove all known noise patterns and special characters
+    noise_patterns = [r'\[.*?\]', r'\(.*?\)', r'\{.*?\}']
+    for pattern in noise_patterns:
+        title_strip = re.sub(pattern, '', title_strip)
+        
     title_strip = title_strip.replace('.', ' ').replace('_', ' ').strip()
-    details['clean_title'] = ' '.join(title_strip.split())
+    clean_title = ' '.join(title_strip.split())
     
-    if not details['clean_title']:
-        details['clean_title'] = base_name.replace('.', ' ')
+    details['clean_title'] = clean_title if clean_title else base_name.replace('.', ' ')
         
     return details
 
@@ -68,28 +80,34 @@ async def create_post(client, user_id, messages):
     year = base_details['year']
     is_series = any(d['type'] == 'series' for d in all_details)
     
+    # --- The Deduplicator Engine ---
     final_links = {}
     for idx, details in enumerate(all_details):
         media = getattr(messages[idx], messages[idx].media.value)
+        # For series, the key is the episode number. For movies, the key is the resolution.
         key = f"ep_{details.get('episode', 0)}" if is_series else details.get('resolution', 'SD')
+        # This will overwrite any previous entry, keeping only the last one for each quality/episode.
         final_links[key] = {
             'label': create_link_label(details),
             'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
         }
         
-    header = f"🎬 **{title}**"
-    if year: header += f" **({year})**"
+    # --- Build Post with New Professional Design ---
+    header = f"🎬  **{title}**"
+    if year: header += f" `({year})`"
     
     post_poster = await get_poster(title, year)
 
     links_text = ""
-    sorted_keys = sorted(final_links.keys(), key=lambda x: (isinstance(x, str) and x.startswith('ep_'), x))
+    # Sort keys for consistent order (episodes first, then resolutions)
+    sorted_keys = sorted(final_links.keys(), key=lambda x: (str(x).startswith('ep_'), x))
     for key in sorted_keys:
         link_info = final_links[key]
-        links_text += f"✨ **{link_info['label']}** ➠ [Watch / Download]({link_info['url']})\n"
+        links_text += f"✨ **{link_info['label']}** ➠  [Watch / Download]({link_info['url']})\n"
         
-    separator = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
-    final_caption = f"{header}\n\nミ★ ᴅᴏᴡɴʟᴏᴀᴅ ʟɪɴᴋs ★彡\n{separator}\n\n{links_text.strip()}\n\n{separator}"
+    # New, more elegant separator and layout
+    separator = "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
+    final_caption = f"{header}\n{separator}\n\n{links_text.strip()}\n\n{separator}"
     
     footer_buttons_data = user.get('footer_buttons', [])
     footer_keyboard = None
