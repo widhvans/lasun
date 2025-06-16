@@ -73,7 +73,7 @@ def create_link_label(details: dict) -> str:
     if details.get('type') == 'series' and details.get('episode'):
         season_part = f"S{details['season']:02d}" if details.get('season') else ""
         episode_part = f"E{details['episode']:02d}"
-        return f"{season_part} {episode_part}".strip()
+        return f"Episode {episode_part.replace('E', '')}".strip()
     
     if details.get('resolution'):
         return details['resolution'].upper()
@@ -127,9 +127,11 @@ async def create_post(client, user_id, messages):
         link_label = create_link_label(details)
         payload = f"get_{file_unique_id}"
         bot_redirect_link = f"https://t.me/{bot_username}?start={payload}"
-        links += f"📤 **{link_label}** 👉 [Click Here]({bot_redirect_link})\n"
+        links += f"📤 **{link_label}** ➠ [Watch / Download]({bot_redirect_link})\n"
 
-    final_caption = f"{header}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n{links.strip()}\n━━━━━━━━━━━━━━━━━━━━━━━"
+    # New, more professional separator
+    separator = "✯ ━━━━━━ ✧ ━━━━━━ ✯"
+    final_caption = f"{header}\n\n{separator}\n\n{links.strip()}\n\n{separator}"
     
     footer_buttons_data = user.get('footer_buttons', [])
     footer_keyboard = None
