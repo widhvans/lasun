@@ -10,146 +10,100 @@ logger = logging.getLogger(__name__)
 
 def extract_file_details(filename: str):
     """
-    Analyzes a filename and extracts structured information like title, year, season, episode, and quality.
+    Hyper-aggressively analyzes a filename to extract the cleanest possible details.
+    Strips away all known technical jargon, release groups, and other noise
+    to produce a clean title suitable for high-accuracy searching.
     """
-    # Normalize filename
-    cleaned_name = re.sub(r'\[.*?\]', '', filename) # Remove bracketed content like [@channel]
-    cleaned_name = re.sub(r'(\.\w+$)', '', cleaned_name) # Remove file extension
-    cleaned_name = cleaned_name.replace('_', ' ').replace('.', ' ') # Replace separators with spaces
-
     details = {
-        'original_name': filename,
-        'title': None, 'year': None, 'type': 'movie',
-        'season': None, 'episode': None, 'quality': None, 'resolution': None,
-        'audio': [], 'source': None
+        'original_name': filename, 'clean_title': None, 'original_title': None,
+        'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None,
     }
-
-    # --- Extract Year ---
-    year_match = re.search(r'\b(19[89]\d|20\d{2})\b', cleaned_name)
+    
+    # Start with the filename before the extension
+    base_name = filename.rsplit('.', 1)[0]
+    details['original_title'] = base_name.replace('.', ' ').strip()
+    
+    # --- Year Extraction ---
+    year_match = re.search(r'\b(19[89]\d|20\d{2})\b', base_name)
     if year_match:
         details['year'] = year_match.group(1)
-        # Temporarily remove year to not confuse title extraction
-        cleaned_name = cleaned_name.replace(details['year'], '')
 
-    # --- Extract Season and Episode (Defines as a Series) ---
-    se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', cleaned_name, re.IGNORECASE)
+    # --- Type, Season, and Episode Extraction ---
+    se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', base_name)
     if se_match:
         details['type'] = 'series'
         details['season'] = int(se_match.group(1))
         details['episode'] = int(se_match.group(2))
-    else:
-        ep_match = re.search(r'\b(episode|ep|e|part)\s?(\d{1,3})\b', cleaned_name, re.IGNORECASE)
+    else: # Check for other series patterns if the main one fails
+        ep_match = re.search(r'\b(episode|ep|e|part)[\s._]?(\d{1,3})\b', base_name, re.IGNORECASE)
         if ep_match:
             details['type'] = 'series'
             details['episode'] = int(ep_match.group(2))
         
-        season_match = re.search(r'\b(season|s)\s?(\d{1,2})\b', cleaned_name, re.IGNORECASE)
+        season_match = re.search(r'\b(season|s)[\s._]?(\d{1,2})\b', base_name, re.IGNORECASE)
         if season_match:
             details['type'] = 'series'
             details['season'] = int(season_match.group(2))
-            
-    # --- Extract Quality & Resolution ---
-    # Prioritize specific resolutions first
-    res_match = re.search(r'\b(2160p|1080p|720p|480p|360p|240p)\b', cleaned_name, re.IGNORECASE)
+
+    # --- Resolution Extraction ---
+    res_match = re.search(r'\b(2160p|1080p|720p|480p|360p|240p)\b', base_name, re.IGNORECASE)
     if res_match:
-        details['resolution'] = res_match.group(1).lower()
-        # Add 'p' if missing, e.g. from "1080"
-        if not details['resolution'].endswith('p'):
-            details['resolution'] += 'p'
+        details['resolution'] = res_match.group(1)
+
+    # --- Title Cleaning: This is the most critical part ---
+    # Strip everything up to the year or a season/episode marker
+    title_strip = base_name
+    stop_point_match = re.search(r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,2})\b', title_strip)
+    if stop_point_match:
+        title_strip = title_strip[:stop_point_match.start()]
     
-    quality_match = re.search(r'\b(4k|UHD|FHD|HD|SD)\b', cleaned_name, re.IGNORECASE)
-    if quality_match:
-        details['quality'] = quality_match.group(1).upper()
-
-    # --- Extract Source ---
-    source_match = re.search(r'\b(BluRay|Blu-Ray|BDRip|BRRip|WEB-DL|WEBDL|WEBRip|HDRip|DVDScr|DVD-Rip)\b', cleaned_name, re.IGNORECASE)
-    if source_match:
-        details['source'] = source_match.group(1).upper().replace("-", "")
-
-    # --- Extract Audio ---
-    audio_match = re.findall(r'\b(Hindi|English|Tamil|Telugu|Dual[\s-]?Audio|Multi[\s-]?Audio)\b', cleaned_name, re.IGNORECASE)
-    if audio_match:
-        details['audio'] = [lang.replace('-', ' ').title() for lang in audio_match]
-
-    # --- Extract Title ---
-    # Remove all technical tags to isolate the title
-    title_strip = cleaned_name
-    tech_tags = [
-        r'[sS]\d{1,2}[eE]\d{1,3}', r'\b(episode|ep|e|part)\s?\d{1,3}\b', r'\b(season|s)\s?\d{1,2}\b',
-        r'\b(2160p|1080p|720p|480p|360p|240p|4k|UHD|FHD|HD|SD)\b',
-        r'\b(BluRay|Blu-Ray|BDRip|BRRip|WEB-DL|WEBDL|WEBRip|HDRip|DVDScr|DVD-Rip)\b',
-        r'\b(Hindi|English|Tamil|Telugu|Dual Audio|Multi Audio)\b',
-        r'\b(x264|x265|HEVC|AAC|AC3)\b',
-        r'\(.*?\)' # Content in parentheses
-    ]
-    for tag in tech_tags:
-        title_strip = re.sub(tag, '', title_strip, flags=re.IGNORECASE)
+    # Remove any remaining noise with a final cleanup
+    # Replace separators and remove excess whitespace
+    title_strip = title_strip.replace('.', ' ').replace('_', ' ').strip()
+    details['clean_title'] = ' '.join(title_strip.split())
     
-    details['title'] = ' '.join(title_strip.split()).strip()
-    if not details['title']:
-        details['title'] = filename.rsplit('.', 1)[0] # Fallback to filename without extension
-
+    # A final sanity check in case cleaning resulted in an empty string
+    if not details['clean_title']:
+        details['clean_title'] = details['original_title']
+        
     return details
 
-
 def create_link_label(details: dict) -> str:
-    """
-    Creates a smart label for a file link based on its extracted details.
-    Examples: "S01 E01", "720p", "1080p BluRay"
-    """
+    """Creates a smart label for a file link based on its extracted details."""
     if details.get('type') == 'series' and details.get('episode'):
         season_part = f"S{details['season']:02d}" if details.get('season') else ""
         episode_part = f"E{details['episode']:02d}"
         return f"{season_part} {episode_part}".strip()
     
     if details.get('resolution'):
-        label = details['resolution'].upper()
-        if details.get('source'):
-            label += f" {details['source']}"
-        return label
+        return details['resolution'].upper()
     
-    if details.get('quality'):
-        return details['quality']
-
-    # Fallback to a cleaned up original name if no specific tags found
-    return " ".join(details['original_name'].rsplit('.', 1)[0].replace('.', ' ').split())
-
+    return "Download" # Generic fallback
 
 def natural_sort_key(s: str):
-    """Sorts strings with numbers in a natural order."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
 
-
 async def create_post(client, user_id, messages):
-    """
-    The main post creation engine. It analyzes a batch of messages,
-    understands the content structure (movie vs series), and formats
-    a single, cohesive post.
-    """
     user = await get_user(user_id)
     if not user: return None, None, None
     
     bot_username = client.me.username
     
-    # 1. Analyze all files in the batch
-    all_details = [extract_file_details(getattr(m, m.media.value).file_name) for m in messages]
-    for i, details in enumerate(all_details):
-        details['message_id'] = messages[i].id
-        details['file_unique_id'] = getattr(messages[i], messages[i].media.value).file_unique_id
+    all_details = []
+    for m in messages:
+        details = extract_file_details(getattr(m, m.media.value).file_name)
+        details['message_obj'] = m # Keep a reference to the original message object
+        all_details.append(details)
 
-    # Sort files naturally based on their original names to handle episodes/parts correctly
     all_details.sort(key=lambda d: natural_sort_key(d['original_name']))
 
-    # 2. Determine Overall Post Title and Type
-    # Use the details from the first file as the base for the post
     base_details = all_details[0]
-    title = base_details['title']
+    title = base_details['clean_title']
     year = base_details['year']
+    is_series = any(d['type'] == 'series' for d in all_details)
     
-    # Check if we have multiple seasons in this batch
     seasons_in_batch = sorted(list(set(d['season'] for d in all_details if d['season'])))
     is_multi_season = len(seasons_in_batch) > 1
-    is_series = any(d['type'] == 'series' for d in all_details)
 
     header = f"🎬 **{title}**"
     if year: header += f" **({year})**"
@@ -158,31 +112,25 @@ async def create_post(client, user_id, messages):
     elif is_multi_season:
          header += f" **(S{seasons_in_batch[0]:02d} - S{seasons_in_batch[-1]:02d})**"
          
-    # 3. Get Poster
-    poster_title = base_details['title']
-    poster_year = base_details['year']
-    post_poster = await get_poster(poster_title, poster_year) if user.get('show_poster', True) else None
+    post_poster = await get_poster(base_details['clean_title'], base_details['year'], base_details['original_title'])
 
-    # 4. Generate Links
     links = ""
     last_season = None
-
     for details in all_details:
-        # Add a season sub-header if the season changes in a multi-season post
+        message_obj = details['message_obj']
+        file_unique_id = getattr(message_obj, message_obj.media.value).file_unique_id
+
         if is_multi_season and details['season'] != last_season:
-            links += f"\n**Mirzapur S{details['season']:02d}**\n"
+            links += f"\n**{title} S{details['season']:02d}**\n"
             last_season = details['season']
 
         link_label = create_link_label(details)
-        payload = f"get_{details['file_unique_id']}"
+        payload = f"get_{file_unique_id}"
         bot_redirect_link = f"https://t.me/{bot_username}?start={payload}"
-        
-        # Format inspired by user examples
         links += f"📤 **{link_label}** 👉 [Click Here]({bot_redirect_link})\n"
 
     final_caption = f"{header}\n\n━━━━━━━━━━━━━━━━━━━━━━━\n{links.strip()}\n━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # 5. Add Footer Buttons
     footer_buttons_data = user.get('footer_buttons', [])
     footer_keyboard = None
     if footer_buttons_data:
@@ -191,9 +139,7 @@ async def create_post(client, user_id, messages):
         
     return post_poster, final_caption, footer_keyboard
 
-
 # --- UNCHANGED HELPER FUNCTIONS ---
-
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
@@ -202,18 +148,9 @@ async def get_main_menu(user_id):
     buttons = [
         [InlineKeyboardButton("➕ Manage Auto Post", callback_data="manage_post_ch")],
         [InlineKeyboardButton("🗃️ Manage Index DB", callback_data="manage_db_ch")],
-        [
-            InlineKeyboardButton(shortener_text, callback_data="shortener_menu"),
-            InlineKeyboardButton("🔄 Backup Links", callback_data="backup_links")
-        ],
-        [
-            InlineKeyboardButton("🔗 Set Filename Link", callback_data="set_filename_link"),
-            InlineKeyboardButton("👣 Footer Buttons", callback_data="manage_footer")
-        ],
-        [
-            InlineKeyboardButton("🖼️ IMDb Poster", callback_data="poster_menu"),
-            InlineKeyboardButton("📂 My Files", callback_data="my_files_1")
-        ],
+        [InlineKeyboardButton(shortener_text, callback_data="shortener_menu"), InlineKeyboardButton("🔄 Backup Links", callback_data="backup_links")],
+        [InlineKeyboardButton("🔗 Set Filename Link", callback_data="set_filename_link"), InlineKeyboardButton("👣 Footer Buttons", callback_data="manage_footer")],
+        [InlineKeyboardButton("🖼️ IMDb Poster", callback_data="poster_menu"), InlineKeyboardButton("📂 My Files", callback_data="my_files_1")],
         [InlineKeyboardButton(fsub_text, callback_data="set_fsub")],
         [InlineKeyboardButton("❓ How to Download", callback_data="set_download")]
     ]
