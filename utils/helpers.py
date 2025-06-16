@@ -11,30 +11,25 @@ logger = logging.getLogger(__name__)
 def extract_file_details(filename: str):
     """
     Hyper-aggressively analyzes a filename to extract the cleanest possible details.
-    Strips away all known technical jargon, release groups, and other noise
-    to produce a clean title suitable for high-accuracy searching.
     """
     details = {
         'original_name': filename, 'clean_title': None, 'original_title': None,
         'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None,
     }
     
-    # Start with the filename before the extension
     base_name = filename.rsplit('.', 1)[0]
     details['original_title'] = base_name.replace('.', ' ').strip()
     
-    # --- Year Extraction ---
     year_match = re.search(r'\b(19[89]\d|20\d{2})\b', base_name)
     if year_match:
         details['year'] = year_match.group(1)
 
-    # --- Type, Season, and Episode Extraction ---
     se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', base_name)
     if se_match:
         details['type'] = 'series'
         details['season'] = int(se_match.group(1))
         details['episode'] = int(se_match.group(2))
-    else: # Check for other series patterns if the main one fails
+    else:
         ep_match = re.search(r'\b(episode|ep|e|part)[\s._]?(\d{1,3})\b', base_name, re.IGNORECASE)
         if ep_match:
             details['type'] = 'series'
@@ -45,40 +40,32 @@ def extract_file_details(filename: str):
             details['type'] = 'series'
             details['season'] = int(season_match.group(2))
 
-    # --- Resolution Extraction ---
     res_match = re.search(r'\b(2160p|1080p|720p|480p|360p|240p)\b', base_name, re.IGNORECASE)
     if res_match:
         details['resolution'] = res_match.group(1)
 
-    # --- Title Cleaning: This is the most critical part ---
-    # Strip everything up to the year or a season/episode marker
     title_strip = base_name
     stop_point_match = re.search(r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,2})\b', title_strip)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
     
-    # Remove any remaining noise with a final cleanup
-    # Replace separators and remove excess whitespace
     title_strip = title_strip.replace('.', ' ').replace('_', ' ').strip()
     details['clean_title'] = ' '.join(title_strip.split())
     
-    # A final sanity check in case cleaning resulted in an empty string
     if not details['clean_title']:
         details['clean_title'] = details['original_title']
         
     return details
 
 def create_link_label(details: dict) -> str:
-    """Creates a smart label for a file link based on its extracted details."""
+    """Creates a smart label for a file link."""
     if details.get('type') == 'series' and details.get('episode'):
-        season_part = f"S{details['season']:02d}" if details.get('season') else ""
-        episode_part = f"E{details['episode']:02d}"
-        return f"Episode {episode_part.replace('E', '')}".strip()
+        return f"Episode {details['episode']}"
     
     if details.get('resolution'):
         return details['resolution'].upper()
     
-    return "Download" # Generic fallback
+    return "Download"
 
 def natural_sort_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
@@ -92,7 +79,7 @@ async def create_post(client, user_id, messages):
     all_details = []
     for m in messages:
         details = extract_file_details(getattr(m, m.media.value).file_name)
-        details['message_obj'] = m # Keep a reference to the original message object
+        details['message_obj'] = m
         all_details.append(details)
 
     all_details.sort(key=lambda d: natural_sort_key(d['original_name']))
@@ -129,7 +116,6 @@ async def create_post(client, user_id, messages):
         bot_redirect_link = f"https://t.me/{bot_username}?start={payload}"
         links += f"📤 **{link_label}** ➠ [Watch / Download]({bot_redirect_link})\n"
 
-    # New, more professional separator
     separator = "✯ ━━━━━━ ✧ ━━━━━━ ✯"
     final_caption = f"{header}\n\n{separator}\n\n{links.strip()}\n\n{separator}"
     
@@ -141,7 +127,6 @@ async def create_post(client, user_id, messages):
         
     return post_poster, final_caption, footer_keyboard
 
-# --- UNCHANGED HELPER FUNCTIONS ---
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
@@ -163,21 +148,3 @@ async def get_main_menu(user_id):
 
 def go_back_button(user_id):
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
-
-def format_bytes(size):
-    if not isinstance(size, (int, float)): return "N/A"
-    power = 1024; n = 0; power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
-    while size >= power and n < len(power_labels) - 1 :
-        size /= power; n += 1
-    return f"{size:.2f} {power_labels[n]}"
-
-async def get_file_raw_link(message):
-    return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
-
-def encode_link(text: str) -> str:
-    return base64.urlsafe_b64encode(text.encode()).decode().strip("=")
-
-def decode_link(encoded_text: str) -> str:
-    padding = 4 - (len(encoded_text) % 4)
-    encoded_text += "=" * padding
-    return base64.urlsafe_b64decode(encoded_text).decode()
