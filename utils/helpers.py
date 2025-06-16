@@ -17,12 +17,10 @@ def extract_file_details(filename: str):
     
     base_name = filename.rsplit('.', 1)[0]
     
-    # Year Extraction
     year_match = re.search(r'\b(19[89]\d|20\d{2})\b', base_name)
     if year_match:
         details['year'] = year_match.group(1)
 
-    # Series Extraction
     se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', base_name)
     if se_match:
         details.update({'type': 'series', 'season': int(se_match.group(1)), 'episode': int(se_match.group(2))})
@@ -34,20 +32,17 @@ def extract_file_details(filename: str):
         if season_match:
             details.update({'type': 'series', 'season': int(season_match.group(2))})
 
-    # Resolution Extraction
-    res_match = re.search(r'\b(2160p|1080p|720p|480p)\b', base_name, re.IGNORECASE)
+    res_match = re.search(r'\b(2160p|1080p|720p|540p|480p)\b', base_name, re.IGNORECASE)
     if res_match:
         details['resolution'] = res_match.group(1)
 
     # --- Definitive Title Cleaning ---
-    # Start with the base name and remove everything after a potential stop point.
     title_strip = base_name
-    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01|E01)\b'
+    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01|E01|S02)\b'
     stop_point_match = re.search(stop_regex, title_strip, re.IGNORECASE)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
     
-    # Remove all known noise patterns and special characters
     noise_patterns = [r'\[.*?\]', r'\(.*?\)', r'\{.*?\}']
     for pattern in noise_patterns:
         title_strip = re.sub(pattern, '', title_strip)
@@ -84,9 +79,7 @@ async def create_post(client, user_id, messages):
     final_links = {}
     for idx, details in enumerate(all_details):
         media = getattr(messages[idx], messages[idx].media.value)
-        # For series, the key is the episode number. For movies, the key is the resolution.
         key = f"ep_{details.get('episode', 0)}" if is_series else details.get('resolution', 'SD')
-        # This will overwrite any previous entry, keeping only the last one for each quality/episode.
         final_links[key] = {
             'label': create_link_label(details),
             'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
@@ -99,15 +92,14 @@ async def create_post(client, user_id, messages):
     post_poster = await get_poster(title, year)
 
     links_text = ""
-    # Sort keys for consistent order (episodes first, then resolutions)
     sorted_keys = sorted(final_links.keys(), key=lambda x: (str(x).startswith('ep_'), x))
     for key in sorted_keys:
         link_info = final_links[key]
         links_text += f"✨ **{link_info['label']}** ➠  [Watch / Download]({link_info['url']})\n"
         
     # New, more elegant separator and layout
-    separator = "┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈"
-    final_caption = f"{header}\n{separator}\n\n{links_text.strip()}\n\n{separator}"
+    separator = "· · ─────── ·𖥸· ─────── · ·"
+    final_caption = f"{header}\n\n{separator}\n\n{links_text.strip()}\n\n{separator}"
     
     footer_buttons_data = user.get('footer_buttons', [])
     footer_keyboard = None
