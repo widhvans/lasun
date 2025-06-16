@@ -1,13 +1,12 @@
 import aiohttp
 from imdb import Cinemagoer
 import logging
-import asyncio
-import re
 from urllib.parse import quote_plus
 from telegraph.aio import Telegraph as AsyncTelegraph
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 import os
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -38,13 +37,14 @@ async def _generate_fallback_image(text):
     image = Image.new('RGB', (600, 800), color=(15, 15, 15))
     draw = ImageDraw.Draw(image)
     
-    # Word wrap logic
+    # Simple word wrap
     words = text.split()
     lines = []
     current_line = ""
     for word in words:
-        # Use the modern textlength method to check width
-        if draw.textlength(current_line + word + " ", font=font) < 550:
+        # **THE FIX**: Use textbbox to correctly get text width
+        bbox = draw.textbbox((0, 0), current_line + word, font=font)
+        if bbox[2] < 550: # width is bbox[2]
             current_line += word + " "
         else:
             lines.append(current_line)
@@ -53,13 +53,11 @@ async def _generate_fallback_image(text):
 
     y_text = 300
     for line in lines:
-        # Use textbbox to get width and height for centering
-        bbox = draw.textbbox((0, 0), line.strip(), font=font)
-        width = bbox[2] - bbox[0]
-        height = bbox[3] - bbox[1]
-        
-        draw.text(((600 - width) / 2, y_text), line.strip(), font=font, fill=(255, 255, 255))
-        y_text += height + 15
+        bbox = draw.textbbox((0, 0), line, font=font)
+        width = bbox[2]
+        height = bbox[3]
+        draw.text(((600 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
+        y_text += height + 10
 
     buffer = BytesIO()
     image.save(buffer, format="PNG")
@@ -70,15 +68,10 @@ async def _generate_fallback_image(text):
         return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
-        return "https://via.placeholder.com/600x800/0F0F0F/FFFFFF.png?text=Poster+Not+Found"
+        return "https://via.placeholder.com/500x750/000000/FFFFFF.png?text=Poster+Not+Found"
 
 async def get_poster(clean_title: str, year: str = None):
-    """
-    The 'Hero' Poster Finder.
-    1. Uses the Cinemagoer library for accurate IMDb searching.
-    2. Downloads the poster and re-uploads to Telegraph for 100% reliability.
-    3. Generates a custom fallback image if all else fails.
-    """
+    """The 'Hero' Poster Finder."""
     logger.info(f"Poster search initiated for: Title='{clean_title}', Year='{year}'")
     search_query = f"{clean_title} {year}" if year else clean_title
 
