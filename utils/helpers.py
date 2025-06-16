@@ -9,10 +9,7 @@ from features.poster import get_poster
 logger = logging.getLogger(__name__)
 
 def extract_file_details(filename: str):
-    """
-    The definitive filename processor. It ruthlessly cleans the filename to
-    isolate the true title, ensuring perfect batching.
-    """
+    """The definitive filename processor. It ruthlessly cleans the filename to isolate the true title."""
     details = {'original_name': filename, 'clean_title': None, 'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None}
     
     base_name = filename.rsplit('.', 1)[0]
@@ -36,9 +33,8 @@ def extract_file_details(filename: str):
     if res_match:
         details['resolution'] = res_match.group(1)
 
-    # --- Definitive Title Cleaning ---
     title_strip = base_name
-    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01|E01|S02)\b'
+    stop_regex = r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}[eE]\d{1,3}|[sS]\d{1,2}|E\d{1,3}|COMPLETE|S01)\b'
     stop_point_match = re.search(stop_regex, title_strip, re.IGNORECASE)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
@@ -68,7 +64,7 @@ async def create_post(client, user_id, messages):
     
     bot_username = client.me.username
     all_details = [extract_file_details(getattr(m, m.media.value).file_name) for m in messages]
-    all_details.sort(key=lambda d: d.get('episode') or 0)
+    all_details.sort(key=lambda d: (d.get('season') or 0, d.get('episode') or 0))
     
     base_details = all_details[0]
     title = base_details['clean_title']
@@ -79,7 +75,7 @@ async def create_post(client, user_id, messages):
     final_links = {}
     for idx, details in enumerate(all_details):
         media = getattr(messages[idx], messages[idx].media.value)
-        key = f"ep_{details.get('episode', 0)}" if is_series else details.get('resolution', 'SD')
+        key = f"ep_{details.get('season', 0)}_{details.get('episode', 0)}" if is_series else details.get('resolution', 'SD')
         final_links[key] = {
             'label': create_link_label(details),
             'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
@@ -87,15 +83,16 @@ async def create_post(client, user_id, messages):
         
     # --- Build Post with New Professional Design ---
     header = f"🎬  **{title}**"
-    if year: header += f" `({year})`"
+    if year: header += f"  `({year})`"
     
     post_poster = await get_poster(title, year)
 
     links_text = ""
+    # Sort keys for consistent order (episodes first, then resolutions)
     sorted_keys = sorted(final_links.keys(), key=lambda x: (str(x).startswith('ep_'), x))
     for key in sorted_keys:
         link_info = final_links[key]
-        links_text += f"✨ **{link_info['label']}** ➠  [Watch / Download]({link_info['url']})\n"
+        links_text += f"✨  **{link_info['label']}** ➠  [Watch / Download]({link_info['url']})\n"
         
     # New, more elegant separator and layout
     separator = "· · ─────── ·𖥸· ─────── · ·"
