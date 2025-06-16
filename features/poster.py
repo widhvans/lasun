@@ -20,7 +20,9 @@ async def _upload_to_telegraph(session, image_url):
         async with session.get(image_url) as response:
             if response.status == 200:
                 content = await response.read()
+                # The response is a list containing a dictionary
                 path = await aio_telegraph.upload_file(BytesIO(content))
+                # Correctly access the 'src' key
                 return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload image to Telegraph: {e}")
@@ -42,9 +44,9 @@ async def _generate_fallback_image(text):
     lines = []
     current_line = ""
     for word in words:
-        # **THE FIX**: Use textbbox to correctly get text width
+        # Use textbbox to get width for modern Pillow versions
         bbox = draw.textbbox((0, 0), current_line + word, font=font)
-        if bbox[2] < 550: # width is bbox[2]
+        if bbox[2] < 550:
             current_line += word + " "
         else:
             lines.append(current_line)
@@ -53,9 +55,8 @@ async def _generate_fallback_image(text):
 
     y_text = 300
     for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        width = bbox[2]
-        height = bbox[3]
+        bbox = draw.textbbox((0,0), line, font=font)
+        width, height = bbox[2], bbox[3]
         draw.text(((600 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
         y_text += height + 10
 
@@ -65,13 +66,16 @@ async def _generate_fallback_image(text):
     
     try:
         path = await aio_telegraph.upload_file(buffer)
+        # Correctly access the 'src' key
         return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
-        return "https://via.placeholder.com/500x750/000000/FFFFFF.png?text=Poster+Not+Found"
+        # If Telegraph fails, use the ultra-reliable placeholder service as a final guarantee
+        return f"https://via.placeholder.com/600x800/0F0F0F/FFFFFF?text={quote_plus(text)}"
+
 
 async def get_poster(clean_title: str, year: str = None):
-    """The 'Hero' Poster Finder."""
+    """The 'Hero' Poster Finder. It will not fail."""
     logger.info(f"Poster search initiated for: Title='{clean_title}', Year='{year}'")
     search_query = f"{clean_title} {year}" if year else clean_title
 
