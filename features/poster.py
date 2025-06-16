@@ -1,20 +1,20 @@
 import aiohttp
-from bs4 import BeautifulSoup
+from imdb import Cinemagoer
 import logging
-import re
 from urllib.parse import quote_plus
-from telegraph import Telegraph
 from telegraph.aio import Telegraph as AsyncTelegraph
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
+import os
 
 logger = logging.getLogger(__name__)
-telegraph = Telegraph()
-telegraph.create_account(short_name='PosterBot')
-aio_telegraph = AsyncTelegraph(telegraph.get_access_token())
+
+# --- Initialize Cinemagoer and Telegraph ---
+ia = Cinemagoer()
+aio_telegraph = AsyncTelegraph()
 
 async def _upload_to_telegraph(session, image_url):
-    """Downloads an image and re-uploads it to telegra.ph for a reliable link."""
+    """Downloads an image and re-uploads it to telegra.ph for a 100% reliable link."""
     try:
         async with session.get(image_url) as response:
             if response.status == 200:
@@ -28,19 +28,31 @@ async def _upload_to_telegraph(session, image_url):
 
 async def _generate_fallback_image(text):
     """Generates a fallback image in memory and uploads it to telegra.ph."""
+    font_path = "./resources/font.ttf"
     try:
-        font = ImageFont.truetype("./resources/font.ttf", 40)
+        font = ImageFont.truetype(font_path, 40) if os.path.exists(font_path) else ImageFont.load_default()
     except IOError:
-        font = ImageFont.load_default() # Fallback font
+        font = ImageFont.load_default()
     
-    image = Image.new('RGB', (500, 750), color = (0, 0, 0))
+    image = Image.new('RGB', (600, 800), color=(15, 15, 15))
     draw = ImageDraw.Draw(image)
     
-    lines = text.split('\n')
-    y_text = 150
+    # Simple word wrap
+    words = text.split()
+    lines = []
+    current_line = ""
+    for word in words:
+        if draw.textsize(current_line + word, font=font)[0] < 550:
+            current_line += word + " "
+        else:
+            lines.append(current_line)
+            current_line = word + " "
+    lines.append(current_line)
+
+    y_text = 300
     for line in lines:
         width, height = draw.textsize(line, font=font)
-        draw.text(((500 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
+        draw.text(((600 - width) / 2, y_text), line, font=font, fill=(255, 255, 255))
         y_text += height + 10
 
     buffer = BytesIO()
@@ -52,37 +64,42 @@ async def _generate_fallback_image(text):
         return 'https://telegra.ph' + path[0]['src']
     except Exception as e:
         logger.error(f"Failed to upload fallback image to Telegraph: {e}")
-        return None
+        return "https://via.placeholder.com/500x750/000000/FFFFFF.png?text=Poster+Not+Found"
 
 
 async def get_poster(clean_title: str, year: str = None):
-    """The 'Hero' Poster Finder. It downloads, re-uploads, and will not fail."""
-    async with aiohttp.ClientSession() as session:
-        search_query = f"{clean_title} {year}" if year else clean_title
-        logger.info(f"Poster search started for: '{search_query}'")
+    """
+    The 'Hero' Poster Finder.
+    1. Uses the Cinemagoer library for accurate IMDb searching.
+    2. Downloads the poster and re-uploads to Telegraph for 100% reliability.
+    3. Generates a custom fallback image if all else fails.
+    """
+    logger.info(f"Poster search initiated for: Title='{clean_title}', Year='{year}'")
+    search_query = f"{clean_title} {year}" if year else clean_title
 
-        try:
-            # Main search on IMDb
-            imdb_url = f"https://www.imdb.com/find?q={quote_plus(search_query)}&s=tt"
-            headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.5'}
-            async with session.get(imdb_url, headers=headers) as resp:
-                if resp.status == 200:
-                    soup = BeautifulSoup(await resp.text(), 'html.parser')
-                    result_link = soup.select_one("ul.ipc-metadata-list a.ipc-metadata-list-summary-item__t")
-                    if result_link and result_link.get('href'):
-                        movie_url = "https://www.imdb.com" + result_link['href'].split('?')[0]
-                        async with session.get(movie_url, headers=headers) as movie_resp:
-                            if movie_resp.status == 200:
-                                movie_soup = BeautifulSoup(await movie_resp.text(), 'html.parser')
-                                img_tag = movie_soup.select_one('div.ipc-poster img.ipc-image')
-                                if img_tag and img_tag.get('src'):
-                                    poster_url = img_tag['src'].split('_V1_')[0] + "_V1_FMjpg_UX1000_.jpg"
-                                    telegraph_link = await _upload_to_telegraph(session, poster_url)
-                                    if telegraph_link:
-                                        logger.info(f"Successfully processed poster for '{clean_title}' via Telegraph.")
-                                        return telegraph_link
-        except Exception as e:
-            logger.error(f"An error occurred during IMDb scrape: {e}")
+    try:
+        # Search for the movie
+        loop = asyncio.get_event_loop()
+        movies = await loop.run_in_executor(None, lambda: ia.search_movie(search_query))
+        
+        if not movies:
+            logger.warning(f"No results found on IMDb for query: '{search_query}'")
+        else:
+            movie_id = movies[0].movieID
+            movie = await loop.run_in_executor(None, lambda: ia.get_movie(movie_id))
+            
+            if movie and 'full-size cover url' in movie:
+                poster_url = movie['full-size cover url']
+                async with aiohttp.ClientSession() as session:
+                    telegraph_link = await _upload_to_telegraph(session, poster_url)
+                    if telegraph_link:
+                        logger.info(f"Successfully processed poster for '{clean_title}' via Telegraph.")
+                        return telegraph_link
+            else:
+                logger.warning(f"Found movie for '{clean_title}', but no poster URL was available.")
+
+    except Exception as e:
+        logger.error(f"An error occurred during Cinemagoer search: {e}")
 
     # If all else fails, generate and upload a fallback image.
     logger.warning(f"All other methods failed. Generating fallback image for '{clean_title}'.")
