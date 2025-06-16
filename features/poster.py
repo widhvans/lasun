@@ -7,7 +7,7 @@ from urllib.parse import quote_plus
 logger = logging.getLogger(__name__)
 
 async def _fetch_from_imdb(session, search_query):
-    """The core function to scrape a poster from IMDb for a given query."""
+    """Scrapes a poster from IMDb for a given query."""
     try:
         search_url = f"https://www.imdb.com/find?q={quote_plus(search_query)}&s=tt"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept-Language': 'en-US,en;q=0.9'}
@@ -34,27 +34,25 @@ async def _fetch_from_imdb(session, search_query):
         logger.error(f"IMDb scraping sub-routine failed for '{search_query}': {e}")
     return None
 
-async def get_poster(clean_title: str, year: str = None, original_title: str = None):
+async def get_poster(clean_title: str, year: str = None):
     """
-    An advanced, multi-layered, API-free poster finder. It tries multiple scraping
-    strategies before creating a reliable fallback image.
+    The 'Hero' Poster Finder. It will not fail.
+    It tries multiple, increasingly broad scraping strategies before falling back.
     """
     async with aiohttp.ClientSession() as session:
+        # Attempt 1: The "Golden" Search (Clean Title + Year)
         if year:
             query = f"{clean_title} {year}"
-            logger.info(f"Poster search (Attempt 1/3): Searching IMDb with '{query}'...")
+            logger.info(f"Poster search (Attempt 1/2): Searching IMDb with '{query}'...")
             poster_url = await _fetch_from_imdb(session, query)
             if poster_url: return poster_url
 
-        logger.info(f"Poster search (Attempt 2/3): Searching IMDb with clean title '{clean_title}'...")
+        # Attempt 2: Broader Search (Clean Title Only)
+        logger.info(f"Poster search (Attempt 2/2): Searching IMDb with clean title '{clean_title}'...")
         poster_url = await _fetch_from_imdb(session, clean_title)
         if poster_url: return poster_url
 
-        if original_title and original_title.lower() != clean_title.lower():
-            logger.info(f"Poster search (Attempt 3/3): Searching IMDb with original title '{original_title}'...")
-            poster_url = await _fetch_from_imdb(session, original_title)
-            if poster_url: return poster_url
-
+    # Final Fallback: A 100% Reliable Placeholder
     logger.warning(f"All scraping attempts failed for '{clean_title}'. Generating a reliable fallback placeholder.")
     placeholder_text = f"{clean_title}{f' ({year})' if year else ''}"
     return f"https://via.placeholder.com/500x750/000000/FFFFFF.png?text={quote_plus(placeholder_text)}"
