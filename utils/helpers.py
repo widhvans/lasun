@@ -61,7 +61,6 @@ async def create_post(client, user_id, messages):
     
     bot_username = client.me.username
     all_details = [extract_file_details(getattr(m, m.media.value).file_name) for m in messages]
-    
     all_details.sort(key=lambda d: d.get('episode') or 0)
     
     base_details = all_details[0]
@@ -100,9 +99,9 @@ async def create_post(client, user_id, messages):
         
     return post_poster, final_caption, footer_keyboard
 
+# --- UNCHANGED HELPER FUNCTIONS ---
 def natural_sort_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
-
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
@@ -121,17 +120,13 @@ async def get_main_menu(user_id):
         buttons.append([InlineKeyboardButton("🔑 Set Owner DB", callback_data="set_owner_db")])
         buttons.append([InlineKeyboardButton("⚠️ Reset Files DB", callback_data="reset_db_prompt")])
     return InlineKeyboardMarkup(buttons)
-
 def go_back_button(user_id):
     return InlineKeyboardMarkup([[InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")]])
-
 def encode_link(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode()).decode().strip("=")
-
 def decode_link(encoded_text: str) -> str:
     padding = 4 - (len(encoded_text) % 4)
     encoded_text += "=" * padding
     return base64.urlsafe_b64decode(encoded_text).decode()
-
 async def get_file_raw_link(message):
     return f"https://t.me/c/{str(message.chat.id).replace('-100', '')}/{message.id}"
