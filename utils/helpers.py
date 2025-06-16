@@ -10,114 +10,110 @@ logger = logging.getLogger(__name__)
 
 def extract_file_details(filename: str):
     """
-    Hyper-aggressively analyzes a filename to extract the cleanest possible details.
+    Final Boss of filename cleaning. Extracts the absolute cleanest details.
     """
-    details = {
-        'original_name': filename, 'clean_title': None, 'original_title': None,
-        'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None,
-    }
+    details = {'original_name': filename, 'clean_title': None, 'year': None, 'type': 'movie', 'season': None, 'episode': None, 'resolution': None}
     
     base_name = filename.rsplit('.', 1)[0]
-    details['original_title'] = base_name.replace('.', ' ').strip()
     
+    # Year Extraction
     year_match = re.search(r'\b(19[89]\d|20\d{2})\b', base_name)
     if year_match:
         details['year'] = year_match.group(1)
 
+    # Series Extraction
     se_match = re.search(r'[sS](\d{1,2})[._ ]?[eE](\d{1,3})', base_name)
     if se_match:
-        details['type'] = 'series'
-        details['season'] = int(se_match.group(1))
-        details['episode'] = int(se_match.group(2))
+        details.update({'type': 'series', 'season': int(se_match.group(1)), 'episode': int(se_match.group(2))})
     else:
-        ep_match = re.search(r'\b(episode|ep|e|part)[\s._]?(\d{1,3})\b', base_name, re.IGNORECASE)
+        ep_match = re.search(r'\b(ep|episode|part)[\s._]?(\d{1,3})\b', base_name, re.IGNORECASE)
         if ep_match:
-            details['type'] = 'series'
-            details['episode'] = int(ep_match.group(2))
-        
+            details.update({'type': 'series', 'episode': int(ep_match.group(2))})
         season_match = re.search(r'\b(season|s)[\s._]?(\d{1,2})\b', base_name, re.IGNORECASE)
         if season_match:
-            details['type'] = 'series'
-            details['season'] = int(season_match.group(2))
+            details.update({'type': 'series', 'season': int(season_match.group(2))})
 
-    res_match = re.search(r'\b(2160p|1080p|720p|480p|360p|240p)\b', base_name, re.IGNORECASE)
+    # Resolution Extraction
+    res_match = re.search(r'\b(2160p|1080p|720p|480p)\b', base_name, re.IGNORECASE)
     if res_match:
         details['resolution'] = res_match.group(1)
 
+    # Title Cleaning
     title_strip = base_name
-    stop_point_match = re.search(r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,2})\b', title_strip)
+    stop_point_match = re.search(r'\b(19\d{2}|20\d{2}|[sS]\d{1,2}|E\d{1,3}|COMPLETE)\b', title_strip, re.IGNORECASE)
     if stop_point_match:
         title_strip = title_strip[:stop_point_match.start()]
     
+    title_strip = re.sub(r'\[.*?\]', '', title_strip) # Remove content in brackets
     title_strip = title_strip.replace('.', ' ').replace('_', ' ').strip()
     details['clean_title'] = ' '.join(title_strip.split())
     
     if not details['clean_title']:
-        details['clean_title'] = details['original_title']
+        details['clean_title'] = base_name.replace('.', ' ') # Fallback
         
     return details
 
 def create_link_label(details: dict) -> str:
-    """Creates a smart label for a file link."""
-    if details.get('type') == 'series' and details.get('episode'):
-        return f"Episode {details['episode']}"
-    
+    """Creates a smart label for the download link."""
+    if details['type'] == 'series' and details.get('episode'):
+        return f"Episode {details['episode']:02d}"
     if details.get('resolution'):
-        return details['resolution'].upper()
-    
+        return f"{details['resolution']}"
     return "Download"
-
-def natural_sort_key(s: str):
-    return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
 
 async def create_post(client, user_id, messages):
     user = await get_user(user_id)
     if not user: return None, None, None
     
     bot_username = client.me.username
+    all_details = [extract_file_details(getattr(m, m.media.value).file_name) for m in messages]
     
-    all_details = []
-    for m in messages:
-        details = extract_file_details(getattr(m, m.media.value).file_name)
-        details['message_obj'] = m
-        all_details.append(details)
-
-    all_details.sort(key=lambda d: natural_sort_key(d['original_name']))
-
+    # Sort to process episodes in order
+    all_details.sort(key=lambda d: d.get('episode') or 0)
+    
     base_details = all_details[0]
     title = base_details['clean_title']
     year = base_details['year']
     is_series = any(d['type'] == 'series' for d in all_details)
     
-    seasons_in_batch = sorted(list(set(d['season'] for d in all_details if d['season'])))
-    is_multi_season = len(seasons_in_batch) > 1
+    # --- The Deduplicator Logic ---
+    final_links = {}
+    for details in all_details:
+        media = getattr(messages[all_details.index(details)], messages[all_details.index(details)].media.value)
+        
+        # For series, the key is the episode number.
+        # For movies, the key is the resolution.
+        if is_series:
+            key = f"ep_{details.get('episode', 0)}"
+        else:
+            key = details.get('resolution', 'SD') # Default to 'SD' if no resolution found
 
+        # Store the link, overwriting any previous entry for the same key.
+        # This ensures only one link per quality/episode.
+        final_links[key] = {
+            'label': create_link_label(details),
+            'url': f"https://t.me/{bot_username}?start=get_{media.file_unique_id}"
+        }
+        
+    # Build Post Header
     header = f"🎬 **{title}**"
     if year: header += f" **({year})**"
-    if is_series and not is_multi_season and seasons_in_batch:
-        header += f" **S{seasons_in_batch[0]:02d} Complete**"
-    elif is_multi_season:
-         header += f" **(S{seasons_in_batch[0]:02d} - S{seasons_in_batch[-1]:02d})**"
-         
-    post_poster = await get_poster(base_details['clean_title'], base_details['year'], base_details['original_title'])
+    
+    # Get Poster
+    post_poster = await get_poster(title, year)
 
-    links = ""
-    last_season = None
-    for details in all_details:
-        message_obj = details['message_obj']
-        file_unique_id = getattr(message_obj, message_obj.media.value).file_unique_id
+    # Build Links Section
+    links_text = ""
+    # Sort keys for consistent order (episodes first, then resolutions)
+    sorted_keys = sorted(final_links.keys(), key=lambda x: (isinstance(x, str) and x.startswith('ep_'), x))
 
-        if is_multi_season and details['season'] != last_season:
-            links += f"\n**{title} S{details['season']:02d}**\n"
-            last_season = details['season']
-
-        link_label = create_link_label(details)
-        payload = f"get_{file_unique_id}"
-        bot_redirect_link = f"https://t.me/{bot_username}?start={payload}"
-        links += f"📤 **{link_label}** ➠ [Watch / Download]({bot_redirect_link})\n"
-
-    separator = "✯ ━━━━━━ ✧ ━━━━━━ ✯"
-    final_caption = f"{header}\n\n{separator}\n\n{links.strip()}\n\n{separator}"
+    for key in sorted_keys:
+        link_info = final_links[key]
+        links_text += f"✨ **{link_info['label']}** ➠ [Watch / Download]({link_info['url']})\n"
+        
+    # Assemble Final Post
+    separator = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+    final_caption = f"{header}\n\nミ★ ᴅᴏᴡɴʟᴏᴀᴅ ʟɪɴᴋs ★彡\n{separator}\n\n{links_text.strip()}\n\n{separator}"
     
     footer_buttons_data = user.get('footer_buttons', [])
     footer_keyboard = None
@@ -127,6 +123,7 @@ async def create_post(client, user_id, messages):
         
     return post_poster, final_caption, footer_keyboard
 
+# --- UNCHANGED HELPER FUNCTIONS ---
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
