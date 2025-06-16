@@ -16,7 +16,7 @@ from pyrogram.errors import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
 logging.getLogger("pyromod").setLevel(logging.WARNING)
-logging.getLogger("imdbpy").setLevel(logging.WARNING) # Suppress Cinemagoer's own logs
+logging.getLogger("imdbpy").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 async def handle_redirect(request):
@@ -40,6 +40,7 @@ class Bot(Client):
         self.web_runner = None
         self.file_queue = asyncio.Queue()
         self.file_batch = {}
+        self.batch_timers = {} # New timer-based batching
         self.batch_locks = {}
 
     async def file_processor_worker(self):
@@ -70,59 +71,67 @@ class Bot(Client):
                 filename = getattr(copied_message, copied_message.media.value).file_name
                 batch_key = get_batch_key(filename)
 
-                if user_id not in self.batch_locks: self.batch_locks[user_id] = {}
-                if batch_key not in self.batch_locks[user_id]: self.batch_locks[user_id][batch_key] = asyncio.Lock()
+                if user_id not in self.file_batch:
+                    self.file_batch[user_id] = {}
+                    self.batch_timers[user_id] = {}
                 
-                async with self.batch_locks[user_id][batch_key]:
-                    if batch_key not in self.file_batch.setdefault(user_id, {}):
-                        self.file_batch[user_id][batch_key] = [copied_message]
-                        asyncio.create_task(self.process_batch_task(user_id, batch_key))
-                    else:
-                        self.file_batch[user_id][batch_key].append(copied_message)
+                # Add file to the batch
+                if batch_key not in self.file_batch[user_id]:
+                    self.file_batch[user_id][batch_key] = []
+                self.file_batch[user_id][batch_key].append(copied_message)
+
+                # Reset the timer for this batch
+                if batch_key in self.batch_timers[user_id]:
+                    self.batch_timers[user_id][batch_key].cancel()
+                
+                self.batch_timers[user_id][batch_key] = asyncio.get_event_loop().call_later(
+                    15, # 15-second wait for more files
+                    lambda: asyncio.create_task(self.process_batch_task(user_id, batch_key))
+                )
+                
             except Exception:
                 logger.exception("Error in file processor worker")
             finally:
                 if 'self.file_queue' in locals() and self.file_queue: self.file_queue.task_done()
 
     async def process_batch_task(self, user_id, batch_key):
-        try:
-            await asyncio.sleep(15) # Increased delay to ensure all files in a batch are collected
-            if user_id not in self.batch_locks or batch_key not in self.batch_locks.get(user_id, {}): return
-            async with self.batch_locks[user_id][batch_key]:
-                messages = self.file_batch[user_id].pop(batch_key, [])
-                if not messages: return
-                
-                user = await get_user(user_id)
-                if not user or not user.get('post_channels'): return
+        if user_id not in self.file_batch or batch_key not in self.file_batch[user_id]:
+            return
 
-                poster, caption, footer_keyboard = await create_post(self, user_id, messages)
-                if not caption: return
-                
-                for channel_id in user.get('post_channels', []).copy():
+        messages = self.file_batch[user_id].pop(batch_key)
+        if not messages: return
+        
+        try:
+            user = await get_user(user_id)
+            if not user or not user.get('post_channels'): return
+
+            poster, caption, footer_keyboard = await create_post(self, user_id, messages)
+            if not caption: return
+            
+            for channel_id in user.get('post_channels', []).copy():
+                try:
+                    await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
+                    await asyncio.sleep(3)
+                except FloodWait as e:
+                    logger.warning(f"FloodWait in {channel_id}. Sleeping for {e.value + 5} seconds.")
+                    await asyncio.sleep(e.value + 5)
+                    await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
+                except (ChannelPrivate, ChatAdminRequired, UserNotParticipant):
+                    logger.error(f"PERMISSION ERROR in {channel_id} for user {user_id}. Removing channel.")
+                    await remove_from_list(user_id, 'post_channels', channel_id)
+                    await self.send_message(user_id, f"⚠️ **Auto-Posting Disabled**\nI failed to post to channel ID `{channel_id}`. I have removed it from your settings.")
+                except Exception as e:
+                    logger.error(f"Unexpected error posting to {channel_id} for user {user_id}: {e}")
                     try:
-                        await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
-                        await asyncio.sleep(3) # Be a good citizen
-                    except FloodWait as e:
-                        logger.warning(f"FloodWait in {channel_id}. Sleeping for {e.value + 5} seconds.")
-                        await asyncio.sleep(e.value + 5)
-                        await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard) # Retry
-                    except (ChannelPrivate, ChatAdminRequired, UserNotParticipant):
-                        logger.error(f"PERMISSION ERROR in {channel_id} for user {user_id}. Removing channel.")
-                        await remove_from_list(user_id, 'post_channels', channel_id)
-                        await self.send_message(user_id, f"⚠️ **Auto-Posting Disabled**\nI failed to post to channel ID `{channel_id}` because I'm not an admin or it's private. I've removed it from your settings.")
-                    except (WebpageCurlFailed, WebpageMediaEmpty) as e:
-                        logger.warning(f"Telegraph URL failed for {channel_id}: {e}. This should not happen. Notifying user.")
-                        await self.send_message(user_id, f"A temporary error occurred with the poster for `{batch_key}`. Please try sending the file again.")
-                    except Exception as e:
-                        logger.error(f"Unexpected error posting to {channel_id} for user {user_id}: {e}")
-                        try:
-                            await self.send_message(user_id, f"An error occurred posting to channel `{channel_id}`: {e}")
-                        except Exception:
-                             logger.error(f"Failed to send error notification to user {user_id}")
+                        await self.send_message(user_id, f"An error occurred posting to channel `{channel_id}`: {e}")
+                    except Exception:
+                         logger.error(f"Failed to send error notification to user {user_id}")
         except Exception:
             logger.exception(f"Major error in process_batch_task for user {user_id}")
         finally:
-            if user_id in self.batch_locks and batch_key in self.batch_locks.get(user_id, {}): del self.batch_locks[user_id][batch_key]
+            # Cleanup timer reference
+            if user_id in self.batch_timers and batch_key in self.batch_timers[user_id]:
+                del self.batch_timers[user_id][batch_key]
 
     async def start_web_server(self):
         self.web_app = web.Application()
@@ -145,7 +154,6 @@ class Bot(Client):
                         with open("./resources/font.ttf", "wb") as f: f.write(await resp.read())
         except Exception as e:
             logger.warning(f"Could not download fallback font, will use default. Error: {e}")
-
 
         self.owner_db_channel_id = await get_owner_db_channel()
         if self.owner_db_channel_id: logger.info(f"Loaded Owner DB ID [{self.owner_db_channel_id}]")
