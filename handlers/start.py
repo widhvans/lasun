@@ -5,7 +5,7 @@ from pyrogram.errors import UserNotParticipant, MessageNotModified
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import Config
 from database.db import add_user, get_file_by_unique_id, get_user, get_owner_db_channel
-from utils.helpers import get_main_menu, decode_link
+from utils.helpers import get_main_menu
 from features.shortener import get_shortlink
 
 logger = logging.getLogger(__name__)
@@ -20,17 +20,18 @@ async def send_file(client, user_id, file_unique_id):
         owner_db_id = await get_owner_db_channel()
         if not owner_db_id:
             logger.error("Owner DB Channel not set, cannot send file.")
-            return await client.send_message(user_id, "A configuration error occurred.")
+            return await client.send_message(user_id, "A configuration error occurred on my end. Please contact the admin.")
 
-        # --- NEW: Create hyperlinked caption here ---
+        # Create a hyperlinked caption if the owner has set a filename URL
         owner_settings = await get_user(file_data['owner_id'])
         filename_url = owner_settings.get("filename_url")
         file_name = file_data.get('file_name', 'N/A')
         
+        caption = f"✅ **Here is your file!**\n\n"
         if filename_url:
-            caption = f"✅ **Here is your file!**\n\n**[{file_name}]({filename_url})**"
+            caption += f"**[{file_name}]({filename_url})**"
         else:
-            caption = f"✅ **Here is your file!**\n\n`{file_name}`"
+            caption += f"`{file_name}`"
 
         await client.copy_message(
             chat_id=user_id,
@@ -54,11 +55,18 @@ async def start_command(client, message):
             if payload.startswith("finalget_"):
                 _, file_unique_id = payload.split("_", 1)
                 await send_file(client, user_id, file_unique_id)
+            
+            # **THE FIX**: New handler for direct, shortener-free access
+            elif payload.startswith("directget_"):
+                _, file_unique_id = payload.split("_", 1)
+                await send_file(client, user_id, file_unique_id)
+
             elif payload.startswith("get_"):
+                # This is the public flow that includes shorteners and fsub
                 await handle_file_request(client, message, user_id, payload)
         except Exception:
             logger.exception("Error processing deep link in /start")
-            await message.reply_text("Something went wrong.")
+            await message.reply_text("Something went wrong processing your request.")
     else:
         text = (
             f"Hello {message.from_user.mention}! 👋\n\n"
@@ -71,26 +79,33 @@ async def start_command(client, message):
         await message.reply_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Let's Go 🚀", callback_data=f"go_back_{user_id}")]]))
 
 async def handle_file_request(client, message, user_id, payload):
+    """Processes public file requests, including FSub and shortener."""
     file_unique_id = payload.split("_", 1)[1]
     file_data = await get_file_by_unique_id(file_unique_id)
     if not file_data: return await message.reply_text("File not found or link has expired.")
+    
     owner_id = file_data['owner_id']
     owner_settings = await get_user(owner_id)
+    
+    # FSub Check
     fsub_channel = owner_settings.get('fsub_channel')
     if fsub_channel:
         try:
             await client.get_chat_member(chat_id=fsub_channel, user_id=user_id)
         except UserNotParticipant:
             try: invite_link = await client.export_chat_invite_link(fsub_channel)
-            except: invite_link = None
+            except: invite_link = None # Fails if bot is not admin
             buttons = [[InlineKeyboardButton("📢 Join Channel", url=invite_link)], [InlineKeyboardButton("🔄 Retry", callback_data=f"retry_{payload}")]]
-            return await message.reply_text("You must join the channel to continue.", reply_markup=InlineKeyboardMarkup(buttons))
+            return await message.reply_text("You must join our channel to get the file.", reply_markup=InlineKeyboardMarkup(buttons))
     
+    # Shortener Logic
     final_delivery_link = f"https://t.me/{client.me.username}?start=finalget_{file_unique_id}"
     shortened_link = await get_shortlink(final_delivery_link, owner_id)
+    
     buttons = [[InlineKeyboardButton("➡️ Click Here to Get Your File ⬅️", url=shortened_link)]]
     if owner_settings.get("how_to_download_link"):
         buttons.append([InlineKeyboardButton("❓ How to Download", url=owner_settings["how_to_download_link"])])
+    
     await message.reply_text(
         "**Your file is almost ready!**\n\n"
         "1. Click the button above to complete the task.\n"
